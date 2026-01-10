@@ -1,0 +1,197 @@
+import os
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from app.database import init_db, close_db
+from app.config import get_settings
+from app.logging_config import setup_logging, get_logger
+from app.routers import users, channels, posts, ml, analytics, ab_testing, admin
+
+# Configure logging
+setup_logging(
+    log_level=os.getenv("LOG_LEVEL", "INFO"),
+    log_dir=os.getenv("LOG_DIR", "/var/log/ppb"),
+    log_file="api.log",
+)
+logger = get_logger(__name__)
+
+settings = get_settings()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan events."""
+    # Startup
+    await init_db()
+    yield
+    # Shutdown
+    await close_db()
+
+
+app = FastAPI(
+    title="Personalized Post Bot - Core API",
+    description="Backend API for the Personalized Post Bot ecosystem",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+# CORS middleware for MiniApp
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, specify allowed origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include routers
+app.include_router(users.router, prefix="/api/v1")
+app.include_router(channels.router, prefix="/api/v1")
+app.include_router(posts.router, prefix="/api/v1")
+app.include_router(ml.router, prefix="/api/v1")
+app.include_router(analytics.router, prefix="/api/v1")
+app.include_router(ab_testing.router, prefix="/api/v1")
+app.include_router(admin.router, prefix="/api/v1")
+
+
+@app.get("/health")
+async def health_check():
+    """Basic health check endpoint."""
+    return {"status": "healthy", "service": "api"}
+
+
+@app.get("/health/ready")
+async def readiness_check():
+    """Readiness check - verifies all dependencies are available."""
+    from app.database import async_session_maker
+    from app.services.qdrant_service import get_qdrant_client
+    from sqlalchemy import text
+    
+    checks = {
+        "service": "api",
+        "postgres": "unknown",
+        "qdrant": "unknown",
+    }
+    all_healthy = True
+    
+    # Check PostgreSQL
+    try:
+        async with async_session_maker() as session:
+            await session.execute(text("SELECT 1"))
+        checks["postgres"] = "healthy"
+    except Exception as e:
+        checks["postgres"] = f"unhealthy: {str(e)[:50]}"
+        all_healthy = False
+    
+    # Check Qdrant
+    try:
+        client = get_qdrant_client()
+        client.get_collections()
+        checks["qdrant"] = "healthy"
+    except Exception as e:
+        checks["qdrant"] = f"unhealthy: {str(e)[:50]}"
+        all_healthy = False
+    
+    checks["status"] = "healthy" if all_healthy else "degraded"
+    return checks
+
+
+@app.get("/health/services")
+async def services_health():
+    """Check health of all services (proxy for dashboard)."""
+    import httpx
+    import redis.asyncio as aioredis
+    from app.database import async_session_maker
+    from app.services.qdrant_service import get_qdrant_client
+    from sqlalchemy import text
+    
+    results = {}
+    
+    # Check PostgreSQL
+    try:
+        async with async_session_maker() as session:
+            await session.execute(text("SELECT 1"))
+        results["postgres"] = {"status": "healthy", "port": 5432}
+    except Exception as e:
+        results["postgres"] = {"status": "unhealthy", "error": str(e)[:50]}
+    
+    # Check Redis
+    try:
+        redis_client = aioredis.from_url("redis://redis:6379/0")
+        await redis_client.ping()
+        await redis_client.close()
+        results["redis"] = {"status": "healthy", "port": 6379}
+    except Exception as e:
+        results["redis"] = {"status": "unhealthy", "error": str(e)[:50]}
+    
+    # Check Qdrant
+    try:
+        client = get_qdrant_client()
+        client.get_collections()
+        results["qdrant"] = {"status": "healthy", "port": 6333}
+    except Exception as e:
+        results["qdrant"] = {"status": "unhealthy", "error": str(e)[:50]}
+    
+    # Check user-bot
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            res = await client.get("http://user-bot:8001/health/ready")
+            data = res.json()
+            results["user_bot"] = {"status": data.get("status", "unknown"), "port": 8001}
+    except Exception as e:
+        results["user_bot"] = {"status": "unhealthy", "error": str(e)[:50]}
+    
+    # Check main-bot via Redis heartbeat
+    try:
+        redis_client = aioredis.from_url("redis://redis:6379/1")
+        heartbeat = await redis_client.get("ppb:main_bot:heartbeat")
+        await redis_client.close()
+        if heartbeat:
+            results["main_bot"] = {"status": "healthy", "mode": "polling"}
+        else:
+            results["main_bot"] = {"status": "unhealthy", "error": "no heartbeat"}
+    except Exception as e:
+        results["main_bot"] = {"status": "unhealthy", "error": str(e)[:50]}
+    
+    # Check miniapp (try both service and container names)
+    miniapp_ok = False
+    for host in ["miniapp", "ppb-miniapp"]:
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                res = await client.get(f"http://{host}:80/")
+                if res.status_code == 200:
+                    results["miniapp"] = {"status": "healthy", "port": 8080}
+                    miniapp_ok = True
+                    break
+        except:
+            continue
+    if not miniapp_ok:
+        results["miniapp"] = {"status": "unknown", "note": "check localhost:8080"}
+    
+    # Check pgAdmin
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            res = await client.get("http://pgadmin:80/")
+            results["pgadmin"] = {"status": "healthy" if res.status_code in [200, 302] else "unhealthy", "port": 5050}
+    except Exception as e:
+        results["pgadmin"] = {"status": "unhealthy", "error": str(e)[:50]}
+    
+    # Check tunnel (cloudflared)
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            res = await client.get("http://tunnel:8080/")  # Cloudflared metrics
+            results["tunnel"] = {"status": "healthy" if res.status_code in [200, 404] else "unknown"}
+    except:
+        results["tunnel"] = {"status": "unknown", "note": "no HTTP endpoint"}
+    
+    return results
+
+
+@app.get("/")
+async def root():
+    """Root endpoint."""
+    return {
+        "message": "Personalized Post Bot - Core API",
+        "docs": "/docs",
+        "health": "/health"
+    }
