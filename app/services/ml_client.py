@@ -3,6 +3,7 @@ HTTP client for ML Service.
 Provides interface to communicate with ML service via REST API.
 """
 
+import os
 import httpx
 import logging
 from typing import List, Dict, Optional, Tuple
@@ -12,8 +13,8 @@ from app.logging_config import get_logger
 logger = get_logger(__name__)
 settings = get_settings()
 
-# ML Service base URL
-ML_SERVICE_URL = "http://ml-service:8002"
+# ML Service base URL (can be overridden via environment)
+ML_SERVICE_URL = os.getenv("ML_SERVICE_URL", "http://ml-service:8002")
 
 
 async def train_model(user_telegram_id: int) -> Tuple[bool, str, float]:
