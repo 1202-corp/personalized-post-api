@@ -287,15 +287,20 @@ async def recalculate_clusters(
     
     This will group similar posts together based on their embeddings,
     allowing faster search by filtering through clusters first.
+    
+    Forwards request to ML Service.
     """
-    from app.services import cluster_service
+    import httpx
     
     try:
-        result = await cluster_service.recalculate_clusters(db, n_clusters=n_clusters)
-        await db.commit()
-        return result
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.post(
+                "http://ml-service:8002/api/v1/clusters/recalculate",
+                json={"n_clusters": n_clusters}
+            )
+            response.raise_for_status()
+            return response.json()
     except Exception as e:
-        await db.rollback()
         raise HTTPException(
             status_code=500,
             detail=f"Error recalculating clusters: {str(e)}"
@@ -304,37 +309,19 @@ async def recalculate_clusters(
 
 @router.get("/clusters/stats")
 async def get_cluster_stats(db: AsyncSession = Depends(get_session)):
-    """Get statistics about current post clusters."""
-    from sqlalchemy import func, select
-    from app.models.post import Post
+    """Get statistics about current post clusters.
     
-    # Get cluster distribution
-    result = await db.execute(
-        select(Post.cluster_id, func.count(Post.id).label("count"))
-        .where(Post.is_deleted == False, Post.cluster_id.isnot(None))
-        .group_by(Post.cluster_id)
-    )
-    cluster_counts = result.all()
+    Forwards request to ML Service.
+    """
+    import httpx
     
-    # Get total stats
-    total_posts = await db.scalar(
-        select(func.count(Post.id)).where(Post.is_deleted == False)
-    )
-    clustered_posts = await db.scalar(
-        select(func.count(Post.id)).where(
-            Post.is_deleted == False,
-            Post.cluster_id.isnot(None)
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get("http://ml-service:8002/api/v1/clusters/stats")
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting cluster stats: {str(e)}"
         )
-    )
-    unclustered_posts = (total_posts or 0) - (clustered_posts or 0)
-    
-    return {
-        "total_posts": total_posts or 0,
-        "clustered_posts": clustered_posts or 0,
-        "unclustered_posts": unclustered_posts,
-        "num_clusters": len(cluster_counts),
-        "cluster_distribution": [
-            {"cluster_id": row[0], "post_count": row[1]} 
-            for row in cluster_counts
-        ]
-    }
