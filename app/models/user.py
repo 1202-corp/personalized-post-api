@@ -1,7 +1,7 @@
 """User ORM model."""
 from datetime import datetime
 from typing import Optional, List
-from sqlalchemy import String, BigInteger, Boolean, DateTime, Enum, Index
+from sqlalchemy import String, BigInteger, Boolean, DateTime, Enum, Index, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 import enum
@@ -37,6 +37,10 @@ class User(Base):
     initial_best_post_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     language: Mapped[str] = mapped_column(String(10), default="en")
     last_nudge_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    
+    # ML preference vector cache (computed from user's liked/disliked posts)
+    preference_vector_cache: Mapped[Optional[List[float]]] = mapped_column(JSON, nullable=True)
+    preference_vector_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     
     last_activity_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), 

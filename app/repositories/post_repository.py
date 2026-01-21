@@ -69,6 +69,27 @@ class PostRepository:
         return list(result.scalars().all())
     
     @staticmethod
+    async def get_all(db: AsyncSession) -> List[Post]:
+        """Get all posts (excluding deleted)."""
+        result = await db.execute(
+            select(Post).where(Post.is_deleted == False)
+        )
+        return list(result.scalars().all())
+    
+    @staticmethod
+    async def get_by_ids(db: AsyncSession, post_ids: List[int]) -> List[Post]:
+        """Get posts by IDs (excluding deleted)."""
+        if not post_ids:
+            return []
+        result = await db.execute(
+            select(Post).where(
+                Post.id.in_(post_ids),
+                Post.is_deleted == False
+            )
+        )
+        return list(result.scalars().all())
+    
+    @staticmethod
     async def create(db: AsyncSession, post_data: PostCreate, channel_id: int) -> Optional[Post]:
         """Create a new post (without commit)."""
         post = Post(

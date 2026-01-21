@@ -276,3 +276,65 @@ async def clear_all_data(confirm: bool = False, db: AsyncSession = Depends(get_s
     await db.commit()
     
     return {"status": "all_data_cleared"}
+
+
+@router.post("/clusters/recalculate")
+async def recalculate_clusters(
+    n_clusters: int = 50,
+    db: AsyncSession = Depends(get_session)
+):
+    """Recalculate post clusters for optimized search.
+    
+    This will group similar posts together based on their embeddings,
+    allowing faster search by filtering through clusters first.
+    """
+    from app.services import cluster_service
+    
+    try:
+        result = await cluster_service.recalculate_clusters(db, n_clusters=n_clusters)
+        await db.commit()
+        return result
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error recalculating clusters: {str(e)}"
+        )
+
+
+@router.get("/clusters/stats")
+async def get_cluster_stats(db: AsyncSession = Depends(get_session)):
+    """Get statistics about current post clusters."""
+    from sqlalchemy import func, select
+    from app.models.post import Post
+    
+    # Get cluster distribution
+    result = await db.execute(
+        select(Post.cluster_id, func.count(Post.id).label("count"))
+        .where(Post.is_deleted == False, Post.cluster_id.isnot(None))
+        .group_by(Post.cluster_id)
+    )
+    cluster_counts = result.all()
+    
+    # Get total stats
+    total_posts = await db.scalar(
+        select(func.count(Post.id)).where(Post.is_deleted == False)
+    )
+    clustered_posts = await db.scalar(
+        select(func.count(Post.id)).where(
+            Post.is_deleted == False,
+            Post.cluster_id.isnot(None)
+        )
+    )
+    unclustered_posts = (total_posts or 0) - (clustered_posts or 0)
+    
+    return {
+        "total_posts": total_posts or 0,
+        "clustered_posts": clustered_posts or 0,
+        "unclustered_posts": unclustered_posts,
+        "num_clusters": len(cluster_counts),
+        "cluster_distribution": [
+            {"cluster_id": row[0], "post_count": row[1]} 
+            for row in cluster_counts
+        ]
+    }
