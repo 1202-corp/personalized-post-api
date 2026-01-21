@@ -105,7 +105,6 @@ async def services_health():
     import httpx
     import redis.asyncio as aioredis
     from app.database import async_session_maker
-    from app.services.qdrant_service import get_qdrant_client
     from sqlalchemy import text
     
     results = {}
