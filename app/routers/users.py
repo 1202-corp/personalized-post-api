@@ -54,7 +54,7 @@ async def create_log(
     try:
         log = await user_service.create_log(session, log_data)
         return log
-    except ValueError as e:
+    except (ValueError, Exception) as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e)
@@ -149,7 +149,7 @@ async def set_user_language(
             detail="User not found"
         )
     user.language = language_data.language
-    await session.flush()
+    await session.commit()
 
 
 @router.post("/{telegram_id}/nudge-sent", status_code=status.HTTP_204_NO_CONTENT)
@@ -166,7 +166,7 @@ async def mark_nudge_sent(
             detail="User not found"
         )
     user.last_nudge_at = datetime.utcnow()
-    await session.flush()
+    await session.commit()
 
 
 @router.post("/{telegram_id}/training-complete", status_code=status.HTTP_200_OK)
