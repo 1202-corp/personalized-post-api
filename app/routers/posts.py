@@ -18,13 +18,20 @@ async def create_post(
     session: AsyncSession = Depends(get_session)
 ):
     """Create a new post."""
-    post = await post_service.create_post(session, post_data)
-    if not post:
+    from app.exceptions import NotFoundError, ValidationError
+    try:
+        post = await post_service.create_post(session, post_data)
+        return post
+    except NotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except ValidationError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Failed to create post (channel not found)"
+            detail=str(e)
         )
-    return post
 
 
 @router.post("/bulk", status_code=status.HTTP_201_CREATED)
@@ -33,8 +40,20 @@ async def bulk_create_posts(
     session: AsyncSession = Depends(get_session)
 ):
     """Bulk create posts for a channel."""
-    posts = await post_service.bulk_create_posts(session, bulk_data)
-    return {"created_count": len(posts), "post_ids": [p.id for p in posts]}
+    from app.exceptions import NotFoundError, ValidationError
+    try:
+        posts = await post_service.bulk_create_posts(session, bulk_data)
+        return {"created_count": len(posts), "post_ids": [p.id for p in posts]}
+    except NotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
 
 
 @router.get("/{post_id}", response_model=PostResponse)
@@ -73,13 +92,20 @@ async def create_interaction(
     session: AsyncSession = Depends(get_session)
 ):
     """Create a user interaction with a post."""
-    interaction = await post_service.create_interaction(session, interaction_data)
-    if not interaction:
+    from app.exceptions import NotFoundError, ValidationError
+    try:
+        interaction = await post_service.create_interaction(session, interaction_data)
+        return interaction
+    except NotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except ValidationError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Failed to create interaction (user/post not found or already exists)"
+            detail=str(e)
         )
-    return interaction
 
 
 @router.get("/interactions/{telegram_id}")

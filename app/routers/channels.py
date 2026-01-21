@@ -48,13 +48,20 @@ async def add_user_channel(
     session: AsyncSession = Depends(get_session)
 ):
     """Associate a channel with a user."""
-    user_channel = await channel_service.add_user_channel(session, user_channel_data)
-    if not user_channel:
+    from app.exceptions import NotFoundError, ValidationError
+    try:
+        channel = await channel_service.add_user_channel(session, user_channel_data)
+        return {"message": "Channel added successfully"}
+    except NotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except ValidationError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Failed to add channel (user/channel not found or already exists)"
+            detail=str(e)
         )
-    return {"message": "Channel added successfully"}
 
 
 @router.get("/user/{telegram_id}/training", response_model=List[ChannelResponse])
