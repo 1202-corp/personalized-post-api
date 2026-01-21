@@ -73,22 +73,6 @@ async def get_feed_targets(
     return users
 
 
-@router.get("/inactive", response_model=List[UserResponse])
-async def get_inactive_users(
-    silence_threshold: int = 600,
-    session: AsyncSession = Depends(get_session)
-):
-    """Get users who have been inactive for longer than silence_threshold seconds."""
-    from datetime import datetime, timedelta
-    since = datetime.utcnow() - timedelta(seconds=silence_threshold)
-    users = await user_service.get_inactive_users(
-        session,
-        since,
-        [UserStatus.TRAINED, UserStatus.ACTIVE]
-    )
-    return users
-
-
 @router.get("/{telegram_id}", response_model=UserResponse)
 async def get_user(
     telegram_id: int,
@@ -132,7 +116,7 @@ async def get_user_language(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    return LanguageResponse(language=user.language or "en")
+    return LanguageResponse(language=user.language or "en_US")
 
 
 @router.put("/{telegram_id}/language", status_code=status.HTTP_204_NO_CONTENT)
@@ -144,21 +128,6 @@ async def set_user_language(
     """Set user's preferred language."""
     from app.services.user_service import UserService
     success = await UserService.update_user_language(session, telegram_id, language_data.language)
-    if not success:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-
-
-@router.post("/{telegram_id}/nudge-sent", status_code=status.HTTP_204_NO_CONTENT)
-async def mark_nudge_sent(
-    telegram_id: int,
-    session: AsyncSession = Depends(get_session)
-):
-    """Mark that a nudge was sent to user."""
-    from app.services.user_service import UserService
-    success = await UserService.mark_nudge_sent(session, telegram_id)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
