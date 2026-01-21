@@ -142,14 +142,13 @@ async def set_user_language(
     session: AsyncSession = Depends(get_session)
 ):
     """Set user's preferred language."""
-    user = await user_service.get_user_by_telegram_id(session, telegram_id)
-    if not user:
+    from app.services.user_service import UserService
+    success = await UserService.update_user_language(session, telegram_id, language_data.language)
+    if not success:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    user.language = language_data.language
-    await session.commit()
 
 
 @router.post("/{telegram_id}/nudge-sent", status_code=status.HTTP_204_NO_CONTENT)
@@ -158,15 +157,13 @@ async def mark_nudge_sent(
     session: AsyncSession = Depends(get_session)
 ):
     """Mark that a nudge was sent to user."""
-    from datetime import datetime
-    user = await user_service.get_user_by_telegram_id(session, telegram_id)
-    if not user:
+    from app.services.user_service import UserService
+    success = await UserService.mark_nudge_sent(session, telegram_id)
+    if not success:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    user.last_nudge_at = datetime.utcnow()
-    await session.commit()
 
 
 @router.post("/{telegram_id}/training-complete", status_code=status.HTTP_200_OK)
@@ -178,35 +175,14 @@ async def mark_training_complete(
     
     Always publishes event to Redis so main-bot can send completion message.
     """
-    import json
-    import logging
-    import redis.asyncio as aioredis
+    from app.services.user_service import UserService
+    from app.exceptions import NotFoundError
     
-    user = await user_service.get_user_by_telegram_id(session, telegram_id)
-    if not user:
+    try:
+        user_status, notified = await UserService.mark_training_complete(session, telegram_id)
+        return {"status": "ok", "user_status": user_status.value, "notified": notified}
+    except NotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+            detail=str(e)
         )
-    
-    # Update status to TRAINED if currently in TRAINING
-    if user.status == UserStatus.TRAINING:
-        user.status = UserStatus.TRAINED
-        user.is_trained = True
-        await session.commit()
-    
-    # Always notify main-bot via Redis pub/sub (even if already trained)
-    notified = False
-    try:
-        redis_client = aioredis.from_url("redis://redis:6379/0")
-        result = await redis_client.publish(
-            "ppb:training_complete",
-            json.dumps({"telegram_id": telegram_id, "chat_id": telegram_id})
-        )
-        await redis_client.close()
-        notified = result > 0
-        logging.info(f"Published training_complete for {telegram_id}, subscribers: {result}")
-    except Exception as e:
-        logging.error(f"Failed to notify bot via Redis: {e}")
-    
-    return {"status": "ok", "user_status": user.status.value, "notified": notified}

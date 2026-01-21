@@ -366,16 +366,3 @@ def _cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
     return dot_product / (magnitude1 * magnitude2)
 
 
-# Legacy function names for backward compatibility
-async def mock_train_model(session: AsyncSession, user_telegram_id: int) -> tuple[bool, str, float]:
-    """Backward compatible wrapper for train_model."""
-    return await train_model(session, user_telegram_id)
-
-
-async def mock_predict(
-    session: AsyncSession,
-    user_telegram_id: int,
-    post_ids: List[int]
-) -> Dict[int, float]:
-    """Backward compatible wrapper for predict."""
-    return await predict(session, user_telegram_id, post_ids)

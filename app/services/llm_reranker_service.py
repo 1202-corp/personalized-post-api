@@ -171,6 +171,33 @@ Return the top {top_k} indices only."""
         return candidate_posts[:top_k]
 
 
+async def _get_user_interaction_texts(
+    session,
+    user_id: int,
+    interaction_type: str,
+    limit: int
+) -> List[str]:
+    """Get text from user's interactions of specific type."""
+    from app.services import post_service
+    from app.repositories.interaction_repository import InteractionRepository
+    from app.models.interaction import InteractionType
+    
+    interaction_enum = InteractionType.LIKE if interaction_type == "like" else InteractionType.DISLIKE
+    interactions = await InteractionRepository.get_by_user_id(session, user_id)
+    filtered_interactions = [
+        i for i in interactions 
+        if i.interaction_type == interaction_enum
+    ][:limit]
+    
+    texts = []
+    for interaction in filtered_interactions:
+        post = await post_service.get_post_by_id(session, interaction.post_id)
+        if post and post.text:
+            texts.append(post.text[:500])
+    
+    return texts
+
+
 async def get_reranked_recommendations(
     session,
     user_telegram_id: int,
@@ -182,9 +209,7 @@ async def get_reranked_recommendations(
     
     This is the main entry point for treatment_b users.
     """
-    from app.services import post_service, user_service
-    from app.models import Interaction
-    from sqlalchemy import select
+    from app.services import user_service
     
     try:
         user = await user_service.get_user_by_telegram_id(session, user_telegram_id)
@@ -192,34 +217,8 @@ async def get_reranked_recommendations(
             return candidate_posts[:limit]
         
         # Get user's liked and disliked post texts
-        likes_result = await session.execute(
-            select(Interaction).where(
-                Interaction.user_id == user.id,
-                Interaction.interaction_type == "like"
-            ).order_by(Interaction.created_at.desc()).limit(10)
-        )
-        likes = likes_result.scalars().all()
-        
-        dislikes_result = await session.execute(
-            select(Interaction).where(
-                Interaction.user_id == user.id,
-                Interaction.interaction_type == "dislike"
-            ).order_by(Interaction.created_at.desc()).limit(5)
-        )
-        dislikes = dislikes_result.scalars().all()
-        
-        # Get post texts
-        user_likes = []
-        for interaction in likes:
-            post = await post_service.get_post_by_id(session, interaction.post_id)
-            if post and post.text:
-                user_likes.append(post.text[:500])
-        
-        user_dislikes = []
-        for interaction in dislikes:
-            post = await post_service.get_post_by_id(session, interaction.post_id)
-            if post and post.text:
-                user_dislikes.append(post.text[:500])
+        user_likes = await _get_user_interaction_texts(session, user.id, "like", 10)
+        user_dislikes = await _get_user_interaction_texts(session, user.id, "dislike", 5)
         
         # Rerank with LLM
         return await rerank_posts_with_llm(

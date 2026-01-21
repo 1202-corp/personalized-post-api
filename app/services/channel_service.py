@@ -179,20 +179,16 @@ class ChannelService:
             return []
         
         user_channels = await UserChannelRepository.get_by_user_id(session, user.id)
-        # Return list of Channel objects
         channel_ids = [uc.channel_id for uc in user_channels]
         if not channel_ids:
             return []
         
-        from sqlalchemy import select
-        from app.models.channel import Channel
-        result = await session.execute(
-            select(Channel).where(
-                Channel.id.in_(channel_ids),
-                Channel.is_deleted == False
-            )
-        )
-        return list(result.scalars().all())
+        channels = []
+        for channel_id in channel_ids:
+            channel = await ChannelRepository.get_by_id(session, channel_id)
+            if channel:
+                channels.append(channel)
+        return channels
 
 
 # Maintain backward compatibility
