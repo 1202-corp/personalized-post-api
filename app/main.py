@@ -10,7 +10,7 @@ from app.routers import users, channels, posts, ml, analytics, ab_testing, admin
 # Configure logging
 setup_logging(
     log_level=os.getenv("LOG_LEVEL", "INFO"),
-    log_dir=os.getenv("LOG_DIR", "/var/log/ppb"),
+    log_dir=os.getenv("LOG_DIR", "/var/log/ppp"),
     log_file="api.log",
 )
 logger = get_logger(__name__)
@@ -168,7 +168,7 @@ async def services_health():
             socket_connect_timeout=2,
             socket_timeout=2,
         )
-        heartbeat = await redis_client.get("ppb:main_bot:heartbeat")
+        heartbeat = await redis_client.get("ppp:main_bot:heartbeat")
         await redis_client.aclose()
         if heartbeat:
             results["main_bot"] = {"status": "healthy", "mode": "polling"}
@@ -179,7 +179,7 @@ async def services_health():
     
     # Check miniapp (try both service and container names)
     miniapp_ok = False
-    for host in ["miniapp", "ppb-miniapp"]:
+    for host in ["miniapp", "ppp-miniapp"]:
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
                 res = await client.get(f"http://{host}:80/")

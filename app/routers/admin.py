@@ -3,18 +3,85 @@ Admin API endpoints for management operations.
 """
 
 from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import datetime, timedelta
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
+import jwt  # pyjwt
 
 from app.database import get_session
 from app.models import User, Channel, Post, Interaction, UserChannel
+from app.config import get_settings
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+security = HTTPBearer()
+settings = get_settings()
+
+
+# ============== JWT Functions ==============
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    """Create JWT access token."""
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=settings.jwt_access_token_expire_minutes)
+    to_encode.update({"exp": expire, "type": "access"})
+    encoded_jwt = jwt.encode(to_encode, settings.jwt_secret, algorithm="HS256")
+    return encoded_jwt
+
+
+def create_refresh_token(data: dict) -> str:
+    """Create JWT refresh token."""
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(days=settings.jwt_refresh_token_expire_days)
+    to_encode.update({"exp": expire, "type": "refresh"})
+    encoded_jwt = jwt.encode(to_encode, settings.jwt_secret, algorithm="HS256")
+    return encoded_jwt
+
+
+def verify_token(token: str, token_type: str = "access") -> dict:
+    """Verify JWT token and return payload."""
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
+        if payload.get("type") != token_type:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token type"
+            )
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired"
+        )
+    except jwt.JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials"
+        )
+
+
+async def get_current_admin(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+    """Dependency to get current admin from JWT token."""
+    token = credentials.credentials
+    payload = verify_token(token, "access")
+    return payload
 
 
 # ============== Request Models ==============
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
 
 class UserUpdate(BaseModel):
     is_trained: Optional[bool] = None
@@ -27,6 +94,58 @@ class ChannelUpdate(BaseModel):
     title: Optional[str] = None
 
 
+# ============== Authentication ==============
+
+@router.post("/auth/login")
+async def login(login_data: LoginRequest):
+    """Login endpoint for admin dashboard.
+    
+    Returns access token and refresh token.
+    """
+    # Verify credentials
+    if login_data.username != settings.admin_username or login_data.password != settings.admin_password:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password"
+        )
+    
+    # Create tokens
+    access_token_expires = timedelta(minutes=settings.jwt_access_token_expire_minutes)
+    access_token = create_access_token(
+        data={"sub": login_data.username, "username": login_data.username},
+        expires_delta=access_token_expires
+    )
+    refresh_token = create_refresh_token(
+        data={"sub": login_data.username, "username": login_data.username}
+    )
+    
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer"
+    }
+
+
+@router.post("/auth/refresh")
+async def refresh_token(refresh_data: RefreshTokenRequest):
+    """Refresh access token using refresh token."""
+    # Verify refresh token
+    payload = verify_token(refresh_data.refresh_token, "refresh")
+    username = payload.get("username")
+    
+    # Create new access token
+    access_token_expires = timedelta(minutes=settings.jwt_access_token_expire_minutes)
+    access_token = create_access_token(
+        data={"sub": username, "username": username},
+        expires_delta=access_token_expires
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer"
+    }
+
+
 # ============== Users ==============
 
 @router.get("/users")
@@ -35,6 +154,7 @@ async def list_users(
     limit: int = 50,
     trained_only: bool = False,
     db: AsyncSession = Depends(get_session),
+    current_admin: dict = Depends(get_current_admin),
 ):
     """List all users with pagination."""
     from app.repositories.user_repository import UserRepository
@@ -71,7 +191,11 @@ async def list_users(
 
 
 @router.get("/users/{user_id}")
-async def get_user_details(user_id: int, db: AsyncSession = Depends(get_session)):
+async def get_user_details(
+    user_id: int,
+    db: AsyncSession = Depends(get_session),
+    current_admin: dict = Depends(get_current_admin),
+):
     """Get detailed user information."""
     from app.repositories.user_repository import UserRepository
     from app.repositories.user_channel_repository import UserChannelRepository
@@ -119,6 +243,7 @@ async def update_user(
     user_id: int,
     update: UserUpdate,
     db: AsyncSession = Depends(get_session),
+    current_admin: dict = Depends(get_current_admin),
 ):
     """Update user settings."""
     from app.repositories.user_repository import UserRepository
@@ -144,7 +269,12 @@ async def update_user(
 
 
 @router.delete("/users/{user_id}")
-async def delete_user(user_id: int, db: AsyncSession = Depends(get_session), hard: bool = False):
+async def delete_user(
+    user_id: int,
+    db: AsyncSession = Depends(get_session),
+    hard: bool = False,
+    current_admin: dict = Depends(get_current_admin),
+):
     """Delete a user and their data."""
     from app.repositories.user_repository import UserRepository
     
@@ -163,6 +293,7 @@ async def list_channels(
     skip: int = 0,
     limit: int = 50,
     db: AsyncSession = Depends(get_session),
+    current_admin: dict = Depends(get_current_admin),
 ):
     """List all channels with stats."""
     from app.repositories.channel_repository import ChannelRepository
@@ -201,6 +332,7 @@ async def update_channel(
     channel_id: int,
     update: ChannelUpdate,
     db: AsyncSession = Depends(get_session),
+    current_admin: dict = Depends(get_current_admin),
 ):
     """Update channel settings."""
     from app.repositories.channel_repository import ChannelRepository
@@ -221,7 +353,12 @@ async def update_channel(
 
 
 @router.delete("/channels/{channel_id}")
-async def delete_channel(channel_id: int, db: AsyncSession = Depends(get_session), hard: bool = False):
+async def delete_channel(
+    channel_id: int,
+    db: AsyncSession = Depends(get_session),
+    hard: bool = False,
+    current_admin: dict = Depends(get_current_admin),
+):
     """Delete a channel and its posts."""
     from app.repositories.channel_repository import ChannelRepository
     
@@ -236,7 +373,11 @@ async def delete_channel(channel_id: int, db: AsyncSession = Depends(get_session
 # ============== System ==============
 
 @router.post("/reset-training/{user_id}")
-async def reset_user_training(user_id: int, db: AsyncSession = Depends(get_session)):
+async def reset_user_training(
+    user_id: int,
+    db: AsyncSession = Depends(get_session),
+    current_admin: dict = Depends(get_current_admin),
+):
     """Reset training status for a user."""
     from app.repositories.user_repository import UserRepository
     from app.repositories.interaction_repository import InteractionRepository
@@ -260,7 +401,11 @@ async def reset_user_training(user_id: int, db: AsyncSession = Depends(get_sessi
 
 
 @router.post("/clear-all-data")
-async def clear_all_data(confirm: bool = False, db: AsyncSession = Depends(get_session)):
+async def clear_all_data(
+    confirm: bool = False,
+    db: AsyncSession = Depends(get_session),
+    current_admin: dict = Depends(get_current_admin),
+):
     """Clear all data from the database. Requires confirm=true."""
     if not confirm:
         raise HTTPException(
@@ -281,7 +426,8 @@ async def clear_all_data(confirm: bool = False, db: AsyncSession = Depends(get_s
 @router.post("/clusters/recalculate")
 async def recalculate_clusters(
     n_clusters: int = 50,
-    db: AsyncSession = Depends(get_session)
+    db: AsyncSession = Depends(get_session),
+    current_admin: dict = Depends(get_current_admin),
 ):
     """Recalculate post clusters for optimized search.
     
@@ -308,7 +454,10 @@ async def recalculate_clusters(
 
 
 @router.get("/clusters/stats")
-async def get_cluster_stats(db: AsyncSession = Depends(get_session)):
+async def get_cluster_stats(
+    db: AsyncSession = Depends(get_session),
+    current_admin: dict = Depends(get_current_admin),
+):
     """Get statistics about current post clusters.
     
     Forwards request to ML Service.

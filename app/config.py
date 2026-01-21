@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
     
     # Database
-    database_url: str = "postgresql+asyncpg://ppb_user:ppb_secret@localhost:5432/ppb_db"
+    database_url: str = "postgresql+asyncpg://ppp_user:ppp_secret@localhost:5432/ppp_db"
     
     # Redis
     redis_url: str = "redis://localhost:6379/0"
@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     
     # Default training channels
     default_training_channels: str = "@durov,@telegram"
+    
+    # Admin Dashboard JWT Authentication
+    admin_username: str = "superadmin"
+    admin_password: str = ""
+    jwt_secret: str = "change-me-in-production"
+    jwt_access_token_expire_minutes: int = 15
+    jwt_refresh_token_expire_days: int = 7
     
     class Config:
         env_file = ".env"

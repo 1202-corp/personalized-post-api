@@ -185,7 +185,7 @@ class UserService:
                 socket_timeout=5,
             )
             result = await redis_client.publish(
-                "ppb:training_complete",
+                "ppp:training_complete",
                 json.dumps({"telegram_id": telegram_id, "chat_id": telegram_id}).encode('utf-8')
             )
             logger.info("training_complete_published", telegram_id=telegram_id, subscribers=result)
