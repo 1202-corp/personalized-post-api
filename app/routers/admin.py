@@ -37,17 +37,21 @@ async def list_users(
     db: AsyncSession = Depends(get_session),
 ):
     """List all users with pagination."""
-    query = select(User).offset(skip).limit(limit)
+    from app.repositories.user_repository import UserRepository
+    from sqlalchemy import select, func
+    
+    query = select(User).where(User.is_deleted == False).offset(skip).limit(limit)
     if trained_only:
         query = query.where(User.is_trained == True)
     
     result = await db.execute(query)
     users = result.scalars().all()
     
-    total = await db.scalar(select(func.count(User.id)))
+    total_query = select(func.count(User.id)).where(User.is_deleted == False)
+    total = await db.scalar(total_query)
     
     return {
-        "total": total,
+        "total": total or 0,
         "skip": skip,
         "limit": limit,
         "users": [
@@ -69,29 +73,28 @@ async def list_users(
 @router.get("/users/{user_id}")
 async def get_user_details(user_id: int, db: AsyncSession = Depends(get_session)):
     """Get detailed user information."""
-    user = await db.get(User, user_id)
+    from app.repositories.user_repository import UserRepository
+    from app.repositories.user_channel_repository import UserChannelRepository
+    from app.repositories.interaction_repository import InteractionRepository
+    from app.models.interaction import InteractionType
+    
+    user = await UserRepository.get_by_id(db, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
     # Get user's channels
-    channels_query = (
-        select(Channel)
-        .join(UserChannel, UserChannel.channel_id == Channel.id)
-        .where(UserChannel.user_id == user.id)
-    )
-    result = await db.execute(channels_query)
-    channels = result.scalars().all()
+    user_channels = await UserChannelRepository.get_by_user_id(db, user.id)
+    channel_ids = [uc.channel_id for uc in user_channels]
+    channels = []
+    for channel_id in channel_ids:
+        from app.repositories.channel_repository import ChannelRepository
+        channel = await ChannelRepository.get_by_id(db, channel_id)
+        if channel:
+            channels.append(channel)
     
     # Get interaction stats
-    interactions = await db.scalar(
-        select(func.count(Interaction.id)).where(Interaction.user_id == user.id)
-    )
-    likes = await db.scalar(
-        select(func.count(Interaction.id)).where(
-            Interaction.user_id == user.id,
-            Interaction.interaction_type == "LIKE"
-        )
-    )
+    interactions = await InteractionRepository.get_by_user_id(db, user.id)
+    likes = [i for i in interactions if i.interaction_type == InteractionType.LIKE]
     
     return {
         "id": user.id,
@@ -105,8 +108,8 @@ async def get_user_details(user_id: int, db: AsyncSession = Depends(get_session)
         "last_activity_at": user.last_activity_at.isoformat() if user.last_activity_at else None,
         "channels": [{"id": c.id, "username": c.username, "title": c.title} for c in channels],
         "stats": {
-            "total_interactions": interactions or 0,
-            "likes": likes or 0,
+            "total_interactions": len(interactions),
+            "likes": len(likes),
         },
     }
 
@@ -118,34 +121,38 @@ async def update_user(
     db: AsyncSession = Depends(get_session),
 ):
     """Update user settings."""
-    user = await db.get(User, user_id)
+    from app.repositories.user_repository import UserRepository
+    from app.schemas import UserUpdate as UserUpdateSchema
+    from app.models.user import UserStatus
+    
+    user = await UserRepository.get_by_id(db, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    if update.is_trained is not None:
-        user.is_trained = update.is_trained
+    # Create UserUpdate schema from admin update
+    user_update = UserUpdateSchema(
+        is_trained=update.is_trained,
+        bonus_channels_count=update.bonus_channels_count
+    )
+    updated_user = await UserRepository.update(db, user.telegram_id, user_update)
+    
     if update.language is not None:
         user.language = update.language
-    if update.bonus_channels_count is not None:
-        user.bonus_channels_count = update.bonus_channels_count
     
     await db.commit()
     return {"status": "updated", "user_id": user_id}
 
 
 @router.delete("/users/{user_id}")
-async def delete_user(user_id: int, db: AsyncSession = Depends(get_session)):
+async def delete_user(user_id: int, db: AsyncSession = Depends(get_session), hard: bool = False):
     """Delete a user and their data."""
-    user = await db.get(User, user_id)
+    from app.repositories.user_repository import UserRepository
+    
+    user = await UserRepository.delete(db, user_id, hard=hard)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Delete related data
-    await db.execute(delete(Interaction).where(Interaction.user_id == user.id))
-    await db.execute(delete(UserChannel).where(UserChannel.user_id == user.id))
-    await db.delete(user)
     await db.commit()
-    
     return {"status": "deleted", "user_id": user_id}
 
 
@@ -158,37 +165,34 @@ async def list_channels(
     db: AsyncSession = Depends(get_session),
 ):
     """List all channels with stats."""
-    query = (
-        select(
-            Channel,
-            func.count(Post.id).label("posts_count"),
-        )
-        .outerjoin(Post, Post.channel_id == Channel.id)
-        .group_by(Channel.id)
-        .offset(skip)
-        .limit(limit)
-    )
+    from app.repositories.channel_repository import ChannelRepository
+    from app.repositories.post_repository import PostRepository
+    from sqlalchemy import select, func
     
-    result = await db.execute(query)
-    channels = result.all()
+    # Get all channels with soft delete filter
+    all_channels = await ChannelRepository.get_all(db)
+    channels = all_channels[skip:skip + limit]
     
-    total = await db.scalar(select(func.count(Channel.id)))
+    total = len(all_channels)
+    
+    # Get post counts for each channel
+    channels_with_stats = []
+    for channel in channels:
+        posts = await PostRepository.get_all_by_channel(db, channel.id)
+        channels_with_stats.append({
+            "id": channel.id,
+            "telegram_id": channel.telegram_id,
+            "username": channel.username,
+            "title": channel.title,
+            "is_default": channel.is_default,
+            "posts_count": len(posts),
+        })
     
     return {
         "total": total,
         "skip": skip,
         "limit": limit,
-        "channels": [
-            {
-                "id": c.Channel.id,
-                "telegram_id": c.Channel.telegram_id,
-                "username": c.Channel.username,
-                "title": c.Channel.title,
-                "is_default": c.Channel.is_default,
-                "posts_count": c.posts_count,
-            }
-            for c in channels
-        ],
+        "channels": channels_with_stats,
     }
 
 
@@ -199,32 +203,33 @@ async def update_channel(
     db: AsyncSession = Depends(get_session),
 ):
     """Update channel settings."""
-    channel = await db.get(Channel, channel_id)
+    from app.repositories.channel_repository import ChannelRepository
+    
+    channel = await ChannelRepository.get_by_id(db, channel_id)
     if not channel:
         raise HTTPException(status_code=404, detail="Channel not found")
     
-    if update.is_default is not None:
-        channel.is_default = update.is_default
-    if update.title is not None:
-        channel.title = update.title
+    updated_channel = await ChannelRepository.update(
+        db, 
+        channel_id,
+        is_default=update.is_default if update.is_default is not None else channel.is_default,
+        title=update.title if update.title is not None else channel.title
+    )
     
     await db.commit()
     return {"status": "updated", "channel_id": channel_id}
 
 
 @router.delete("/channels/{channel_id}")
-async def delete_channel(channel_id: int, db: AsyncSession = Depends(get_session)):
+async def delete_channel(channel_id: int, db: AsyncSession = Depends(get_session), hard: bool = False):
     """Delete a channel and its posts."""
-    channel = await db.get(Channel, channel_id)
+    from app.repositories.channel_repository import ChannelRepository
+    
+    channel = await ChannelRepository.delete(db, channel_id, hard=hard)
     if not channel:
         raise HTTPException(status_code=404, detail="Channel not found")
     
-    # Delete posts first
-    await db.execute(delete(Post).where(Post.channel_id == channel.id))
-    await db.execute(delete(UserChannel).where(UserChannel.channel_id == channel.id))
-    await db.delete(channel)
     await db.commit()
-    
     return {"status": "deleted", "channel_id": channel_id}
 
 
@@ -233,17 +238,24 @@ async def delete_channel(channel_id: int, db: AsyncSession = Depends(get_session
 @router.post("/reset-training/{user_id}")
 async def reset_user_training(user_id: int, db: AsyncSession = Depends(get_session)):
     """Reset training status for a user."""
-    user = await db.get(User, user_id)
+    from app.repositories.user_repository import UserRepository
+    from app.repositories.interaction_repository import InteractionRepository
+    from app.schemas import UserUpdate
+    
+    user = await UserRepository.get_by_id(db, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
+    # Update user status
     user.is_trained = False
     user.initial_best_post_sent = False
     
     # Delete their interactions
-    await db.execute(delete(Interaction).where(Interaction.user_id == user.id))
-    await db.commit()
+    interactions = await InteractionRepository.get_by_user_id(db, user.id)
+    for interaction in interactions:
+        await InteractionRepository.delete(db, interaction.id)
     
+    await db.commit()
     return {"status": "training_reset", "user_id": user_id}
 
 

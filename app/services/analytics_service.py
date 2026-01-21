@@ -12,32 +12,42 @@ from app.models import User, Post, Interaction, Channel, UserChannel, UserLog
 
 async def get_overview_stats(db: AsyncSession) -> dict:
     """Get overall platform statistics."""
-    # Total users
-    total_users = await db.scalar(select(func.count(User.id)))
+    # Total users (excluding deleted)
+    total_users = await db.scalar(
+        select(func.count(User.id)).where(User.is_deleted == False)
+    )
     
     # Trained users
     trained_users = await db.scalar(
-        select(func.count(User.id)).where(User.is_trained == True)
+        select(func.count(User.id)).where(
+            User.is_trained == True,
+            User.is_deleted == False
+        )
     )
     
-    # Total channels
-    total_channels = await db.scalar(select(func.count(Channel.id)))
+    # Total channels (excluding deleted)
+    total_channels = await db.scalar(
+        select(func.count(Channel.id)).where(Channel.is_deleted == False)
+    )
     
-    # Total posts
-    total_posts = await db.scalar(select(func.count(Post.id)))
+    # Total posts (excluding deleted)
+    total_posts = await db.scalar(
+        select(func.count(Post.id)).where(Post.is_deleted == False)
+    )
     
     # Total interactions
     total_interactions = await db.scalar(select(func.count(Interaction.id)))
     
     # Interactions breakdown
+    from app.models.interaction import InteractionType
     likes = await db.scalar(
-        select(func.count(Interaction.id)).where(Interaction.interaction_type == "LIKE")
+        select(func.count(Interaction.id)).where(Interaction.interaction_type == InteractionType.LIKE)
     )
     dislikes = await db.scalar(
-        select(func.count(Interaction.id)).where(Interaction.interaction_type == "DISLIKE")
+        select(func.count(Interaction.id)).where(Interaction.interaction_type == InteractionType.DISLIKE)
     )
     skips = await db.scalar(
-        select(func.count(Interaction.id)).where(Interaction.interaction_type == "SKIP")
+        select(func.count(Interaction.id)).where(Interaction.interaction_type == InteractionType.SKIP)
     )
     
     return {
@@ -72,10 +82,14 @@ async def get_daily_stats(db: AsyncSession, days: int = 7) -> list:
         start = datetime.combine(date, datetime.min.time())
         end = datetime.combine(date, datetime.max.time())
         
-        # New users
+        # New users (excluding deleted)
         new_users = await db.scalar(
             select(func.count(User.id)).where(
-                and_(User.created_at >= start, User.created_at <= end)
+                and_(
+                    User.created_at >= start,
+                    User.created_at <= end,
+                    User.is_deleted == False
+                )
             )
         )
         
@@ -104,7 +118,11 @@ async def get_channel_stats(db: AsyncSession, limit: int = 10) -> list:
             Channel.title,
             func.count(Post.id).label("posts_count"),
         )
-        .outerjoin(Post, Post.channel_id == Channel.id)
+        .outerjoin(Post, and_(
+            Post.channel_id == Channel.id,
+            Post.is_deleted == False
+        ))
+        .where(Channel.is_deleted == False)
         .group_by(Channel.id)
         .order_by(func.count(Post.id).desc())
         .limit(limit)
@@ -116,16 +134,24 @@ async def get_channel_stats(db: AsyncSession, limit: int = 10) -> list:
     stats = []
     for ch in channels:
         # Get interaction stats for this channel's posts
+        from app.models.interaction import InteractionType
         interactions = await db.scalar(
             select(func.count(Interaction.id))
             .join(Post, Interaction.post_id == Post.id)
-            .where(Post.channel_id == ch.id)
+            .where(
+                Post.channel_id == ch.id,
+                Post.is_deleted == False
+            )
         )
         
         likes = await db.scalar(
             select(func.count(Interaction.id))
             .join(Post, Interaction.post_id == Post.id)
-            .where(and_(Post.channel_id == ch.id, Interaction.interaction_type == "LIKE"))
+            .where(and_(
+                Post.channel_id == ch.id,
+                Post.is_deleted == False,
+                Interaction.interaction_type == InteractionType.LIKE
+            ))
         )
         
         stats.append({
@@ -145,17 +171,25 @@ async def get_user_retention(db: AsyncSession, days: int = 7) -> dict:
     """Calculate user retention metrics."""
     today = datetime.utcnow().date()
     
-    # Users active in the last N days
+    # Users active in the last N days (excluding deleted)
     active_cutoff = datetime.combine(today - timedelta(days=days), datetime.min.time())
     active_users = await db.scalar(
-        select(func.count(User.id)).where(User.last_activity_at >= active_cutoff)
+        select(func.count(User.id)).where(
+            User.last_activity_at >= active_cutoff,
+            User.is_deleted == False
+        )
     )
     
-    total_users = await db.scalar(select(func.count(User.id)))
+    total_users = await db.scalar(
+        select(func.count(User.id)).where(User.is_deleted == False)
+    )
     
     # Users who completed training
     trained_users = await db.scalar(
-        select(func.count(User.id)).where(User.is_trained == True)
+        select(func.count(User.id)).where(
+            User.is_trained == True,
+            User.is_deleted == False
+        )
     )
     
     return {
@@ -171,23 +205,35 @@ async def get_user_retention(db: AsyncSession, days: int = 7) -> dict:
 async def get_recommendation_effectiveness(db: AsyncSession) -> dict:
     """Analyze recommendation effectiveness based on interactions."""
     # Average relevance score of liked posts vs disliked
+    from app.models.interaction import InteractionType
     liked_avg = await db.scalar(
         select(func.avg(Post.relevance_score))
         .join(Interaction, Interaction.post_id == Post.id)
-        .where(Interaction.interaction_type == "LIKE")
+        .where(
+            Interaction.interaction_type == InteractionType.LIKE,
+            Post.is_deleted == False
+        )
     )
     
     disliked_avg = await db.scalar(
         select(func.avg(Post.relevance_score))
         .join(Interaction, Interaction.post_id == Post.id)
-        .where(Interaction.interaction_type == "DISLIKE")
+        .where(
+            Interaction.interaction_type == InteractionType.DISLIKE,
+            Post.is_deleted == False
+        )
     )
     
-    # Posts with relevance scores (indicates embeddings were processed)
+    # Posts with relevance scores (excluding deleted)
     posts_with_scores = await db.scalar(
-        select(func.count(Post.id)).where(Post.relevance_score.isnot(None))
+        select(func.count(Post.id)).where(
+            Post.relevance_score.isnot(None),
+            Post.is_deleted == False
+        )
     )
-    total_posts = await db.scalar(select(func.count(Post.id)))
+    total_posts = await db.scalar(
+        select(func.count(Post.id)).where(Post.is_deleted == False)
+    )
     
     return {
         "avg_liked_score": round(liked_avg or 0, 4),
