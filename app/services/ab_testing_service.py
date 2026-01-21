@@ -11,7 +11,6 @@ from datetime import datetime
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import User, Interaction
 
 
 class RecommendationAlgorithm(str, Enum):
@@ -81,7 +80,6 @@ async def get_ab_test_results(db: AsyncSession) -> dict:
     IMPORTANT: Only counts POST-TRAINING interactions (after user completed training).
     Training interactions are for calibration and should not affect A/B metrics.
     """
-    from app.models import Post
     
     results = {
         "test_name": AB_TEST_CONFIG["test_name"],
@@ -93,18 +91,16 @@ async def get_ab_test_results(db: AsyncSession) -> dict:
     # Default training count (7 posts from default channels)
     DEFAULT_TRAINING_COUNT = 7
     
-    # Get all users
-    users_result = await db.execute(
-        select(User.id, User.telegram_id, User.is_trained)
-    )
-    users = users_result.all()
+    # Get all users (excluding deleted)
+    from app.repositories.user_repository import UserRepository
+    all_users = await UserRepository.get_all(db)
     
     # Assign users to variants and calculate metrics
     variant_users = {v: [] for v in AB_TEST_CONFIG["variants"].keys()}
     
-    for user_id, telegram_id, is_trained in users:
-        variant = get_user_variant(telegram_id, AB_TEST_CONFIG["test_name"])
-        variant_users[variant].append((user_id, is_trained, DEFAULT_TRAINING_COUNT))
+    for user in all_users:
+        variant = get_user_variant(user.telegram_id, AB_TEST_CONFIG["test_name"])
+        variant_users[variant].append((user.id, user.is_trained, DEFAULT_TRAINING_COUNT))
     
     for variant_name, user_list in variant_users.items():
         trained_users = [(u[0], u[2]) for u in user_list if u[1]]  # Only trained users
@@ -127,18 +123,21 @@ async def get_ab_test_results(db: AsyncSession) -> dict:
         total_post_training = 0
         total_post_training_likes = 0
         
+        from app.repositories.interaction_repository import InteractionRepository
+        from app.models.interaction import InteractionType
+        
         for user_id, training_count in trained_users:
             # Get all interactions ordered by created_at, skip first training_count
-            interactions_result = await db.execute(
-                select(Interaction.interaction_type)
-                .where(Interaction.user_id == user_id)
-                .order_by(Interaction.created_at)
-                .offset(training_count)  # Skip training interactions
-            )
-            post_training = interactions_result.scalars().all()
+            interactions = await InteractionRepository.get_by_user_id(db, user_id)
+            # Sort by created_at and skip training interactions
+            sorted_interactions = sorted(interactions, key=lambda x: x.created_at)
+            post_training = sorted_interactions[training_count:]
             
             total_post_training += len(post_training)
-            total_post_training_likes += sum(1 for i in post_training if i.value == "like")
+            total_post_training_likes += sum(
+                1 for i in post_training 
+                if i.interaction_type == InteractionType.LIKE
+            )
         
         results["variants"][variant_name] = {
             "algorithm": AB_TEST_CONFIG["variants"][variant_name]["algorithm"],

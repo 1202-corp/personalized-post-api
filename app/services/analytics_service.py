@@ -7,7 +7,12 @@ from typing import Optional
 from sqlalchemy import func, select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import User, Post, Interaction, Channel, UserChannel, UserLog
+from app.models.user import User
+from app.models.post import Post
+from app.models.interaction import Interaction
+from app.models.channel import Channel
+from app.models.user_channel import UserChannel
+from app.models.user_log import UserLog
 
 
 async def get_overview_stats(db: AsyncSession) -> dict:

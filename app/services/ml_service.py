@@ -12,7 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.services import post_service, user_service
 from app.services import embedding_service, qdrant_service
-from app.models import UserStatus, Post, Channel, Interaction, User, InteractionType
+from app.models.user import UserStatus, User
+from app.models.post import Post
+from app.models.channel import Channel
+from app.models.interaction import InteractionType
 from app.schemas import UserUpdate
 
 logger = logging.getLogger(__name__)
