@@ -18,13 +18,18 @@ _qdrant_client: Optional[QdrantClient] = None
 
 
 def get_qdrant_client() -> QdrantClient:
-    """Get or create Qdrant client."""
+    """Get or create Qdrant vector database client.
+    
+    The client is singleton - reused across all requests for efficiency.
+    """
     global _qdrant_client
     if _qdrant_client is None:
         _qdrant_client = QdrantClient(
             host=settings.qdrant_host,
             port=settings.qdrant_port,
+            timeout=30,  # Connection timeout in seconds
         )
+        logger.info(f"Initialized Qdrant client: {settings.qdrant_host}:{settings.qdrant_port}")
     return _qdrant_client
 
 
@@ -32,8 +37,10 @@ _collection_created = False
 
 async def ensure_collection_exists() -> bool:
     """
-    Ensure the post embeddings collection exists.
+    Ensure the post embeddings collection exists in Qdrant.
     Creates it if it doesn't exist.
+    
+    Uses a global flag to avoid repeated checks.
     """
     global _collection_created
     if _collection_created:
@@ -52,12 +59,17 @@ async def ensure_collection_exists() -> bool:
                     distance=models.Distance.COSINE,
                 ),
             )
-            logger.info(f"Created Qdrant collection: {settings.qdrant_collection_name}")
+            logger.info(
+                f"Created Qdrant collection: {settings.qdrant_collection_name} "
+                f"(dimensions: {settings.embedding_dimensions})"
+            )
+        else:
+            logger.debug(f"Qdrant collection already exists: {settings.qdrant_collection_name}")
         
         _collection_created = True
         return True
     except Exception as e:
-        logger.error(f"Error ensuring collection exists: {e}")
+        logger.error(f"Error ensuring Qdrant collection exists: {e}", exc_info=True)
         return False
 
 

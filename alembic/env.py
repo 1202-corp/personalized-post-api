@@ -1,15 +1,23 @@
 """
-Alembic environment configuration for SQLAlchemy.
-Uses sync psycopg2 driver for migrations.
+Alembic environment configuration for SQLAlchemy database migrations.
+
+This module configures Alembic to:
+- Use sync psycopg2 driver for migrations (Alembic requires sync connections)
+- Auto-generate migrations based on SQLAlchemy models
+- Handle both online and offline migration modes
+
+Note: The application uses asyncpg for async operations, but Alembic
+migrations run with sync psycopg2 driver.
 """
 
 from logging.config import fileConfig
+import sys
 
 from sqlalchemy import engine_from_config, pool
 
 from alembic import context
 
-# Import models for autogenerate
+# Import models for autogenerate - all models must be imported
 from app.models import Base
 from app.config import get_settings
 
@@ -20,12 +28,23 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Model metadata for autogenerate
+# Model metadata for autogenerate - includes all imported models
 target_metadata = Base.metadata
 
-# Get database URL from settings - convert async to sync driver
+# Get database URL from settings and convert async to sync driver
+# Application uses asyncpg, but Alembic requires sync psycopg2
 settings = get_settings()
-sync_url = settings.database_url.replace("+asyncpg", "+psycopg2")
+if "+asyncpg" in settings.database_url:
+    sync_url = settings.database_url.replace("+asyncpg", "+psycopg2")
+elif "+psycopg2" not in settings.database_url and "postgresql" in settings.database_url:
+    # Fallback: assume asyncpg if not specified
+    sync_url = settings.database_url.replace("postgresql://", "postgresql+psycopg2://")
+else:
+    sync_url = settings.database_url
+
+if not sync_url.startswith("postgresql"):
+    sys.exit(f"Error: Invalid database URL for Alembic. Expected PostgreSQL, got: {sync_url[:20]}...")
+
 config.set_main_option("sqlalchemy.url", sync_url)
 
 

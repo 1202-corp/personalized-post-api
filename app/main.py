@@ -117,9 +117,15 @@ async def services_health():
     
     # Check Redis
     try:
-        redis_client = aioredis.from_url("redis://redis:6379/0")
+        from app.config import get_settings
+        settings = get_settings()
+        redis_client = aioredis.from_url(
+            settings.redis_url,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+        )
         await redis_client.ping()
-        await redis_client.close()
+        await redis_client.aclose()
         results["redis"] = {"status": "healthy", "port": 6379}
     except Exception as e:
         results["redis"] = {"status": "unhealthy", "error": str(e)[:50]}
@@ -141,11 +147,15 @@ async def services_health():
     except Exception as e:
         results["user_bot"] = {"status": "unhealthy", "error": str(e)[:50]}
     
-    # Check main-bot via Redis heartbeat
+    # Check main-bot via Redis heartbeat (uses DB 1)
     try:
-        redis_client = aioredis.from_url("redis://redis:6379/1")
+        redis_client = aioredis.from_url(
+            "redis://redis:6379/1",
+            socket_connect_timeout=2,
+            socket_timeout=2,
+        )
         heartbeat = await redis_client.get("ppb:main_bot:heartbeat")
-        await redis_client.close()
+        await redis_client.aclose()
         if heartbeat:
             results["main_bot"] = {"status": "healthy", "mode": "polling"}
         else:

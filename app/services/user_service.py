@@ -196,22 +196,32 @@ class UserService:
     
     @staticmethod
     async def _notify_training_complete(telegram_id: int) -> bool:
-        """Notify main-bot via Redis about training completion."""
+        """Notify main-bot via Redis pub/sub about training completion."""
         import json
         import redis.asyncio as aioredis
+        from app.config import get_settings
         
+        settings = get_settings()
+        redis_client = None
         try:
-            redis_client = aioredis.from_url("redis://redis:6379/0")
+            redis_client = aioredis.from_url(
+                settings.redis_url,
+                decode_responses=False,  # We send JSON bytes
+                socket_connect_timeout=5,
+                socket_timeout=5,
+            )
             result = await redis_client.publish(
                 "ppb:training_complete",
-                json.dumps({"telegram_id": telegram_id, "chat_id": telegram_id})
+                json.dumps({"telegram_id": telegram_id, "chat_id": telegram_id}).encode('utf-8')
             )
-            await redis_client.close()
             logger.info("training_complete_published", telegram_id=telegram_id, subscribers=result)
             return result > 0
         except Exception as e:
-            logger.error("redis_notification_failed", error=str(e), telegram_id=telegram_id)
+            logger.error("redis_notification_failed", error=str(e), telegram_id=telegram_id, exc_info=True)
             return False
+        finally:
+            if redis_client:
+                await redis_client.aclose()
 
 
 # Maintain backward compatibility - export functions directly
