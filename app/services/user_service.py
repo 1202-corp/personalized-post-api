@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.user import User, UserStatus
+from app.models.user_log import UserLog
 from app.repositories.user_repository import UserRepository
 from app.repositories.user_log_repository import UserLogRepository
 from app.schemas import UserCreate, UserUpdate, LogCreate
@@ -105,7 +106,7 @@ class UserService:
         return await UserRepository.get_by_statuses(session, statuses)
     
     @staticmethod
-    async def create_log(session: AsyncSession, log_data: LogCreate) -> User:
+    async def create_log(session: AsyncSession, log_data: LogCreate) -> UserLog:
         """Create a user activity log entry."""
         try:
             user = await UserRepository.get_by_telegram_id(session, log_data.user_telegram_id)
@@ -160,7 +161,7 @@ async def get_inactive_users(
     return await UserService.get_inactive_users(session, since, statuses)
 
 
-async def create_log(session: AsyncSession, log_data: LogCreate) -> User:
+async def create_log(session: AsyncSession, log_data: LogCreate) -> UserLog:
     """Create a user activity log entry."""
     return await UserService.create_log(session, log_data)
 
