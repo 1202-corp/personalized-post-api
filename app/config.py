@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 1536  # text-embedding-ada-002 dimension
     
     # Qdrant vector database settings
-    qdrant_host: str = "vector-db"  # Docker service name for vector database
+    qdrant_host: str = "vector-db-qdrant"  # Docker service name for vector database
     qdrant_port: int = 6333
     qdrant_collection_name: str = "post_embeddings"
     

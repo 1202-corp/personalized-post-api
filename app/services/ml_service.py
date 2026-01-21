@@ -73,10 +73,16 @@ async def train_model(session: AsyncSession, user_telegram_id: int) -> tuple[boo
         if not preference_vector:
             return False, "Could not compute preference vector", time.time() - start_time
         
+        # Save preference vector to user cache
+        user.preference_vector_cache = preference_vector
+        from datetime import datetime
+        user.preference_vector_updated_at = datetime.utcnow()
+        
         # Get all posts from user's channels and score them
         await _score_user_channel_posts(session, user_telegram_id, preference_vector)
         
-        # Update user status
+        # Update user status and save preference vector
+        await session.commit()
         await user_service.update_user(
             session,
             user_telegram_id,
@@ -107,16 +113,28 @@ async def predict(
         if not user:
             return {}
         
-        # Get user's liked posts for preference vector
-        liked_posts, disliked_posts = await _get_user_interaction_posts(session, user.id)
+        # Try to use cached preference vector first
+        preference_vector = user.preference_vector_cache
         
-        liked_embeddings = await _get_embeddings_for_posts([p.id for p in liked_posts])
-        disliked_embeddings = await _get_embeddings_for_posts([p.id for p in disliked_posts])
-        
-        preference_vector = await qdrant_service.get_user_preference_vector(
-            liked_embeddings,
-            disliked_embeddings if disliked_embeddings else None
-        )
+        # If no cache or cache is stale, recalculate
+        if not preference_vector:
+            # Get user's liked posts for preference vector
+            liked_posts, disliked_posts = await _get_user_interaction_posts(session, user.id)
+            
+            liked_embeddings = await _get_embeddings_for_posts([p.id for p in liked_posts])
+            disliked_embeddings = await _get_embeddings_for_posts([p.id for p in disliked_posts])
+            
+            preference_vector = await qdrant_service.get_user_preference_vector(
+                liked_embeddings,
+                disliked_embeddings if disliked_embeddings else None
+            )
+            
+            # Cache the vector if computed
+            if preference_vector:
+                user.preference_vector_cache = preference_vector
+                from datetime import datetime
+                user.preference_vector_updated_at = datetime.utcnow()
+                await session.commit()
         
         if not preference_vector:
             # Fallback to neutral scores
@@ -168,20 +186,31 @@ async def get_recommended_posts(
         if not user:
             return []
         
-        # Get user's liked posts for preference vector
-        liked_posts, disliked_posts = await _get_user_interaction_posts(session, user.id)
+        # Try to use cached preference vector first
+        preference_vector = user.preference_vector_cache
         
-        if not liked_posts:
-            # No liked posts yet - return recent posts
-            return []
-        
-        liked_embeddings = await _get_embeddings_for_posts([p.id for p in liked_posts])
-        disliked_embeddings = await _get_embeddings_for_posts([p.id for p in disliked_posts])
-        
-        preference_vector = await qdrant_service.get_user_preference_vector(
-            liked_embeddings,
-            disliked_embeddings if disliked_embeddings else None
-        )
+        # If no cache, try to compute from interactions
+        if not preference_vector:
+            liked_posts, disliked_posts = await _get_user_interaction_posts(session, user.id)
+            
+            if not liked_posts:
+                # No liked posts yet - return recent posts
+                return []
+            
+            liked_embeddings = await _get_embeddings_for_posts([p.id for p in liked_posts])
+            disliked_embeddings = await _get_embeddings_for_posts([p.id for p in disliked_posts])
+            
+            preference_vector = await qdrant_service.get_user_preference_vector(
+                liked_embeddings,
+                disliked_embeddings if disliked_embeddings else None
+            )
+            
+            # Cache if computed
+            if preference_vector:
+                user.preference_vector_cache = preference_vector
+                from datetime import datetime
+                user.preference_vector_updated_at = datetime.utcnow()
+                await session.commit()
         
         if not preference_vector:
             return []
@@ -193,12 +222,52 @@ async def get_recommended_posts(
             interactions = await InteractionRepository.get_by_user_id(session, user.id)
             exclude_ids = {i.post_id for i in interactions}
         
-        # Search for similar posts
+        # Optimized search using clusters
+        from app.services import cluster_service
+        from app.repositories.post_repository import PostRepository
+        
+        # Get all posts with clusters
+        all_posts = await PostRepository.get_all(session)
+        post_ids = [p.id for p in all_posts]
+        
+        # Find similar clusters
+        cluster_centroids = await cluster_service.get_cluster_centroids(session, post_ids)
+        similar_clusters = await cluster_service.find_similar_clusters(
+            preference_vector,
+            cluster_centroids,
+            top_k=5,
+            similarity_threshold=0.5
+        )
+        
+        # Get posts from similar clusters (pre-filter)
+        cluster_ids = [c[0] for c in similar_clusters]
+        filtered_posts = await cluster_service.get_posts_from_clusters(
+            session,
+            cluster_ids,
+            limit=(limit + len(exclude_ids)) * 3  # Get more candidates from clusters
+        )
+        
+        filtered_post_ids = [p.id for p in filtered_posts if p.id not in exclude_ids]
+        
+        # If we have filtered posts from clusters, use them for search
+        # Otherwise fallback to full search
+        if filtered_post_ids:
+            # Filter Qdrant search to only these post IDs (using point IDs)
+            # We'll do the filtering after getting results
+            search_limit = min(limit * 5, len(filtered_post_ids))  # Search more from clusters
+        else:
+            search_limit = limit + len(exclude_ids)
+        
+        # Search for similar posts (full search, then filter by cluster results)
         results = await qdrant_service.search_similar_posts(
             query_vector=preference_vector,
-            limit=limit + len(exclude_ids),  # Get extra to filter
+            limit=search_limit,
             score_threshold=0.3,
         )
+        
+        # Filter results to only posts from similar clusters
+        if filtered_post_ids:
+            results = [r for r in results if r['id'] in filtered_post_ids]
         
         # Filter and return
         recommended = []
