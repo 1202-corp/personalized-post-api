@@ -63,8 +63,8 @@ async def health_check():
 @app.get("/health/ready")
 async def readiness_check():
     """Readiness check - verifies all dependencies are available."""
+    import httpx
     from app.database import async_session_maker
-    from app.services.qdrant_service import get_qdrant_client
     from sqlalchemy import text
     
     checks = {
@@ -144,8 +144,14 @@ async def services_health():
                 "postgres": ml_data.get("postgres", "unknown"),
                 "qdrant": ml_data.get("qdrant", "unknown")
             }
+            # Also include Qdrant status from ML service
+            if ml_data.get("qdrant") == "healthy":
+                results["qdrant"] = {"status": "healthy", "port": 6333}
+            else:
+                results["qdrant"] = {"status": "unhealthy", "error": ml_data.get("qdrant", "unknown")}
     except Exception as e:
         results["ml_service"] = {"status": "unhealthy", "error": str(e)[:50]}
+        results["qdrant"] = {"status": "unknown", "error": "ML service unavailable"}
     
     # Check user-bot
     try:
