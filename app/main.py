@@ -192,14 +192,6 @@ async def services_health():
     if not miniapp_ok:
         results["miniapp"] = {"status": "unknown", "note": "check localhost:8080"}
     
-    # Check pgAdmin
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            res = await client.get("http://pgadmin:80/")
-            results["pgadmin"] = {"status": "healthy" if res.status_code in [200, 302] else "unhealthy", "port": 5050}
-    except Exception as e:
-        results["pgadmin"] = {"status": "unhealthy", "error": str(e)[:50]}
-    
     # Check tunnel (cloudflared)
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
