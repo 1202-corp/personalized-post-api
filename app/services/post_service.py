@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.post import Post
 from app.models.channel import Channel
 from app.models.interaction import Interaction, InteractionType
+from app.models.user import User
 from app.repositories.post_repository import PostRepository
 from app.repositories.channel_repository import ChannelRepository
 from app.repositories.interaction_repository import InteractionRepository
