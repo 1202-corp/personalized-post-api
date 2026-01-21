@@ -124,6 +124,94 @@ class UserService:
             await session.rollback()
             logger.error("log_creation_failed", error=str(e), exc_info=True)
             raise ValidationError(f"Failed to create log: {str(e)}")
+    
+    @staticmethod
+    async def update_user_language(
+        session: AsyncSession,
+        telegram_id: int,
+        language: str
+    ) -> bool:
+        """Update user's preferred language."""
+        try:
+            user = await UserRepository.get_by_telegram_id(session, telegram_id)
+            if not user:
+                return False
+            
+            user.language = language
+            await session.commit()
+            logger.info("user_language_updated", user_id=user.id, language=language)
+            return True
+        except Exception as e:
+            await session.rollback()
+            logger.error("user_language_update_failed", error=str(e), telegram_id=telegram_id, exc_info=True)
+            raise
+    
+    @staticmethod
+    async def mark_nudge_sent(session: AsyncSession, telegram_id: int) -> bool:
+        """Mark that a nudge was sent to user."""
+        try:
+            user = await UserRepository.get_by_telegram_id(session, telegram_id)
+            if not user:
+                return False
+            
+            user.last_nudge_at = datetime.utcnow()
+            await session.commit()
+            logger.info("nudge_marked_sent", user_id=user.id)
+            return True
+        except Exception as e:
+            await session.rollback()
+            logger.error("mark_nudge_sent_failed", error=str(e), telegram_id=telegram_id, exc_info=True)
+            raise
+    
+    @staticmethod
+    async def mark_training_complete(
+        session: AsyncSession,
+        telegram_id: int
+    ) -> tuple[UserStatus, bool]:
+        """Mark user training as complete and notify via Redis.
+        
+        Returns (user_status, notified).
+        """
+        try:
+            user = await UserRepository.get_by_telegram_id(session, telegram_id)
+            if not user:
+                raise NotFoundError(f"User with telegram_id {telegram_id} not found")
+            
+            # Update status to TRAINED if currently in TRAINING
+            if user.status == UserStatus.TRAINING:
+                user.status = UserStatus.TRAINED
+                user.is_trained = True
+                await session.commit()
+            
+            # Notify main-bot via Redis pub/sub
+            notified = await UserService._notify_training_complete(telegram_id)
+            
+            return user.status, notified
+        except NotFoundError:
+            raise
+        except Exception as e:
+            await session.rollback()
+            logger.error("mark_training_complete_failed", error=str(e), telegram_id=telegram_id, exc_info=True)
+            raise
+    
+    @staticmethod
+    async def _notify_training_complete(telegram_id: int) -> bool:
+        """Notify main-bot via Redis about training completion."""
+        import json
+        import redis.asyncio as aioredis
+        
+        try:
+            redis_client = aioredis.from_url("redis://redis:6379/0")
+            result = await redis_client.publish(
+                "ppb:training_complete",
+                json.dumps({"telegram_id": telegram_id, "chat_id": telegram_id})
+            )
+            await redis_client.close()
+            logger.info("training_complete_published", telegram_id=telegram_id, subscribers=result)
+            return result > 0
+        except Exception as e:
+            logger.error("redis_notification_failed", error=str(e), telegram_id=telegram_id)
+            return False
 
 
 # Maintain backward compatibility - export functions directly
