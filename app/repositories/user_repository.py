@@ -57,22 +57,6 @@ class UserRepository:
         return list(result.scalars().all())
     
     @staticmethod
-    async def get_inactive_users(
-        db: AsyncSession,
-        since: datetime,
-        statuses: Optional[List[UserStatus]] = None
-    ) -> List[User]:
-        """Get users who have been inactive since given time."""
-        query = select(User).where(
-            User.last_activity_at < since,
-            User.is_deleted == False
-        )
-        if statuses:
-            query = query.where(User.status.in_(statuses))
-        result = await db.execute(query)
-        return list(result.scalars().all())
-    
-    @staticmethod
     async def create(db: AsyncSession, user_data: UserCreate) -> User:
         """Create a new user (without commit)."""
         user = User(

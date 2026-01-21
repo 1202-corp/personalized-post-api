@@ -89,15 +89,6 @@ class UserService:
             raise
     
     @staticmethod
-    async def get_inactive_users(
-        session: AsyncSession,
-        since: datetime,
-        statuses: Optional[List[UserStatus]] = None
-    ) -> List[User]:
-        """Get users who have been inactive since given time."""
-        return await UserRepository.get_inactive_users(session, since, statuses)
-    
-    @staticmethod
     async def get_users_by_statuses(
         session: AsyncSession,
         statuses: List[UserStatus]
@@ -144,23 +135,6 @@ class UserService:
         except Exception as e:
             await session.rollback()
             logger.error("user_language_update_failed", error=str(e), telegram_id=telegram_id, exc_info=True)
-            raise
-    
-    @staticmethod
-    async def mark_nudge_sent(session: AsyncSession, telegram_id: int) -> bool:
-        """Mark that a nudge was sent to user."""
-        try:
-            user = await UserRepository.get_by_telegram_id(session, telegram_id)
-            if not user:
-                return False
-            
-            user.last_nudge_at = datetime.utcnow()
-            await session.commit()
-            logger.info("nudge_marked_sent", user_id=user.id)
-            return True
-        except Exception as e:
-            await session.rollback()
-            logger.error("mark_nudge_sent_failed", error=str(e), telegram_id=telegram_id, exc_info=True)
             raise
     
     @staticmethod
@@ -248,15 +222,6 @@ async def update_user(session: AsyncSession, telegram_id: int, user_update: User
 async def update_user_activity(session: AsyncSession, telegram_id: int) -> bool:
     """Update user's last activity timestamp."""
     return await UserService.update_user_activity(session, telegram_id)
-
-
-async def get_inactive_users(
-    session: AsyncSession,
-    since: datetime,
-    statuses: List[UserStatus] = None
-) -> List[User]:
-    """Get users who have been inactive since given time."""
-    return await UserService.get_inactive_users(session, since, statuses)
 
 
 async def create_log(session: AsyncSession, log_data: LogCreate) -> UserLog:

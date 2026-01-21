@@ -32,7 +32,7 @@ class UserResponse(UserBase):
     is_trained: bool
     bonus_channels_count: int
     initial_best_post_sent: Optional[bool] = False
-    language: Optional[str] = "en"
+    language: Optional[str] = "en_US"
     last_activity_at: datetime
     created_at: datetime
     
