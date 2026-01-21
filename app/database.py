@@ -26,11 +26,15 @@ class Base(DeclarativeBase):
 
 
 async def get_session() -> AsyncSession:
-    """Dependency for getting async database session."""
+    """
+    Dependency for getting async database session.
+    
+    Session is NOT automatically committed. You must explicitly call
+    session.commit() in your code. On exception, rollback is automatic.
+    """
     async with async_session_maker() as session:
         try:
             yield session
-            await session.commit()
         except Exception:
             await session.rollback()
             raise
