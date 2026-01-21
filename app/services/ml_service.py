@@ -186,10 +186,9 @@ async def get_recommended_posts(
         # Get IDs of posts to exclude
         exclude_ids = set()
         if exclude_interacted:
-            result = await session.execute(
-                select(Interaction.post_id).where(Interaction.user_id == user.id)
-            )
-            exclude_ids = {row[0] for row in result.all()}
+            from app.repositories.interaction_repository import InteractionRepository
+            interactions = await InteractionRepository.get_by_user_id(session, user.id)
+            exclude_ids = {i.post_id for i in interactions}
         
         # Search for similar posts
         results = await qdrant_service.search_similar_posts(
@@ -237,27 +236,31 @@ async def _get_user_interaction_posts(
     user_id: int
 ) -> tuple[List[Post], List[Post]]:
     """Get user's liked and disliked posts."""
-    # Liked posts
-    liked_result = await session.execute(
-        select(Post)
-        .join(Interaction)
-        .where(
-            Interaction.user_id == user_id,
-            Interaction.interaction_type == InteractionType.LIKE
-        )
-    )
-    liked_posts = list(liked_result.scalars().all())
+    from app.repositories.interaction_repository import InteractionRepository
+    from app.repositories.post_repository import PostRepository
     
-    # Disliked posts
-    disliked_result = await session.execute(
-        select(Post)
-        .join(Interaction)
-        .where(
-            Interaction.user_id == user_id,
-            Interaction.interaction_type == InteractionType.DISLIKE
-        )
-    )
-    disliked_posts = list(disliked_result.scalars().all())
+    interactions = await InteractionRepository.get_by_user_id(session, user_id)
+    
+    liked_post_ids = [
+        i.post_id for i in interactions 
+        if i.interaction_type == InteractionType.LIKE
+    ]
+    disliked_post_ids = [
+        i.post_id for i in interactions 
+        if i.interaction_type == InteractionType.DISLIKE
+    ]
+    
+    liked_posts = []
+    for post_id in liked_post_ids:
+        post = await PostRepository.get_by_id(session, post_id)
+        if post:
+            liked_posts.append(post)
+    
+    disliked_posts = []
+    for post_id in disliked_post_ids:
+        post = await PostRepository.get_by_id(session, post_id)
+        if post:
+            disliked_posts.append(post)
     
     return liked_posts, disliked_posts
 
@@ -326,14 +329,12 @@ async def _score_user_channel_posts(
 ) -> None:
     """Score all posts in user's channels based on preference vector."""
     from app.services.channel_service import get_user_channels
+    from app.repositories.post_repository import PostRepository
     
     channels = await get_user_channels(session, user_telegram_id)
     
     for channel in channels:
-        result = await session.execute(
-            select(Post).where(Post.channel_id == channel.id)
-        )
-        posts = list(result.scalars().all())
+        posts = await PostRepository.get_all_by_channel(session, channel.id)
         
         # Ensure embeddings exist
         await _ensure_post_embeddings(session, posts)
