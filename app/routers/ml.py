@@ -7,7 +7,7 @@ from app.schemas import (
     TrainRequest, TrainResponse,
     PredictRequest, PredictResponse
 )
-from app.services import ml_service
+from app.services.ml_client import train_model, predict, get_recommended_posts, check_training_eligibility
 
 router = APIRouter(prefix="/ml", tags=["ml"])
 
@@ -29,7 +29,7 @@ class RecommendationsResponse(BaseModel):
 
 
 @router.post("/train", response_model=TrainResponse)
-async def train_model(
+async def train_model_endpoint(
     request: TrainRequest,
     session: AsyncSession = Depends(get_session)
 ):
@@ -42,10 +42,10 @@ async def train_model(
     3. Stores embeddings in Qdrant vector database
     4. Computes user preference vector
     5. Scores all posts in user's channels
+    
+    This endpoint forwards the request to ML Service.
     """
-    success, message, training_time = await ml_service.train_model(
-        session, request.user_telegram_id
-    )
+    success, message, training_time = await train_model(request.user_telegram_id)
     return TrainResponse(
         success=success,
         message=message,
@@ -54,19 +54,17 @@ async def train_model(
 
 
 @router.post("/predict", response_model=PredictResponse)
-async def predict(
+async def predict_endpoint(
     request: PredictRequest,
     session: AsyncSession = Depends(get_session)
 ):
     """
     Get ML predictions for posts.
     Returns relevance scores based on user preference vector similarity.
+    
+    This endpoint forwards the request to ML Service.
     """
-    predictions = await ml_service.predict(
-        session,
-        request.user_telegram_id,
-        request.post_ids
-    )
+    predictions = await predict(request.user_telegram_id, request.post_ids)
     return PredictResponse(predictions=predictions)
 
 
@@ -78,9 +76,10 @@ async def get_recommendations(
     """
     Get personalized post recommendations for a user.
     Uses vector similarity search to find posts similar to user's preferences.
+    
+    This endpoint forwards the request to ML Service.
     """
-    recommendations = await ml_service.get_recommended_posts(
-        session,
+    recommendations = await get_recommended_posts(
         request.user_telegram_id,
         limit=request.limit,
         exclude_interacted=request.exclude_interacted
@@ -102,6 +101,10 @@ async def check_eligibility(
     telegram_id: int,
     session: AsyncSession = Depends(get_session)
 ):
-    """Check if user is eligible to start ML training."""
-    eligible, message = await ml_service.check_training_eligibility(session, telegram_id)
+    """
+    Check if user is eligible to start ML training.
+    
+    This endpoint forwards the request to ML Service.
+    """
+    eligible, message = await check_training_eligibility(telegram_id)
     return {"eligible": eligible, "message": message}

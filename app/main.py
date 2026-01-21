@@ -83,13 +83,16 @@ async def readiness_check():
         checks["postgres"] = f"unhealthy: {str(e)[:50]}"
         all_healthy = False
     
-    # Check Qdrant
+    # Check ML Service
     try:
-        client = get_qdrant_client()
-        client.get_collections()
-        checks["qdrant"] = "healthy"
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            res = await client.get("http://ml-service:8002/health/ready")
+            ml_checks = res.json()
+            checks["ml_service"] = ml_checks.get("status", "unknown")
+            if ml_checks.get("status") != "healthy":
+                all_healthy = False
     except Exception as e:
-        checks["qdrant"] = f"unhealthy: {str(e)[:50]}"
+        checks["ml_service"] = f"unhealthy: {str(e)[:50]}"
         all_healthy = False
     
     checks["status"] = "healthy" if all_healthy else "degraded"
@@ -130,13 +133,19 @@ async def services_health():
     except Exception as e:
         results["redis"] = {"status": "unhealthy", "error": str(e)[:50]}
     
-    # Check Qdrant
+    # Check ML Service
     try:
-        client = get_qdrant_client()
-        client.get_collections()
-        results["qdrant"] = {"status": "healthy", "port": 6333}
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            res = await client.get("http://ml-service:8002/health/ready")
+            ml_data = res.json()
+            results["ml_service"] = {
+                "status": ml_data.get("status", "unknown"),
+                "port": 8002,
+                "postgres": ml_data.get("postgres", "unknown"),
+                "qdrant": ml_data.get("qdrant", "unknown")
+            }
     except Exception as e:
-        results["qdrant"] = {"status": "unhealthy", "error": str(e)[:50]}
+        results["ml_service"] = {"status": "unhealthy", "error": str(e)[:50]}
     
     # Check user-bot
     try:
