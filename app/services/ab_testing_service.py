@@ -114,7 +114,7 @@ async def get_ab_test_results(db: AsyncSession) -> dict:
                 "post_training_interactions": 0,
                 "post_training_likes": 0,
                 "like_rate": 0,
-                "note": "Нет обученных юзеров для сравнения"
+                "note": "No trained users for comparison"
             }
             continue
         
