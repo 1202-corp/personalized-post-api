@@ -22,7 +22,46 @@ class ABTestConfigUpdate(BaseModel):
 
 @router.get("/results")
 async def get_ab_test_results(db: AsyncSession = Depends(get_session)):
-    """Get A/B test results with metrics per variant."""
+    """
+    Get A/B test results with metrics per variant.
+    
+    Returns comprehensive A/B testing results including user counts,
+    training statistics, like rates, and average scores for each variant
+    (Control and Treatment).
+    
+    **Example Request:**
+    ```
+    GET /api/v1/ab-testing/results
+    ```
+    
+    **Example Response:**
+    ```json
+    {
+        "variants": {
+            "control": {
+                "algorithm": "cosine_similarity",
+                "users": 500,
+                "trained": 400,
+                "post_training_interactions": 2000,
+                "post_training_likes": 1500,
+                "like_rate": 0.75,
+                "avg_score_liked": 0.85,
+                "avg_score_disliked": 0.30
+            },
+            "treatment_a": {
+                "algorithm": "hybrid",
+                "users": 500,
+                "trained": 400,
+                "post_training_interactions": 2000,
+                "post_training_likes": 1600,
+                "like_rate": 0.80,
+                "avg_score_liked": 0.88,
+                "avg_score_disliked": 0.28
+            }
+        }
+    }
+    ```
+    """
     return await ab_testing_service.get_ab_test_results(db)
 
 

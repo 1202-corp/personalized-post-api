@@ -65,6 +65,7 @@ class UserRepository:
             first_name=user_data.first_name,
             last_name=user_data.last_name,
             status=UserStatus.NEW,
+            language=user_data.language or "en_US",  # Use provided language or default
         )
         db.add(user)
         await db.flush()
@@ -93,6 +94,9 @@ class UserRepository:
             deleted_user.username = user_data.username
             deleted_user.first_name = user_data.first_name
             deleted_user.last_name = user_data.last_name
+            # Update language if provided (for new users restoring)
+            if user_data.language:
+                deleted_user.language = user_data.language
             deleted_user.updated_at = datetime.utcnow()
             await db.flush()
             return deleted_user, True

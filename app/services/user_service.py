@@ -34,15 +34,12 @@ class UserService:
             await session.commit()
             await session.refresh(user)
             logger.info(
-                "user_created",
-                user_id=user.id,
-                telegram_id=user.telegram_id,
-                username=user.username
+                f"user_created: user_id={user.id}, telegram_id={user.telegram_id}, username={user.username}"
             )
             return user
         except Exception as e:
             await session.rollback()
-            logger.error("user_creation_failed", error=str(e), exc_info=True)
+            logger.error(f"user_creation_failed: {str(e)}", exc_info=True)
             raise
     
     @staticmethod
@@ -53,11 +50,11 @@ class UserService:
             await session.commit()
             if is_new:
                 await session.refresh(user)
-                logger.info("user_created", user_id=user.id, telegram_id=user.telegram_id)
+                logger.info(f"user_created: user_id={user.id}, telegram_id={user.telegram_id}")
             return user, is_new
         except Exception as e:
             await session.rollback()
-            logger.error("get_or_create_user_failed", error=str(e), exc_info=True)
+            logger.error(f"get_or_create_user_failed: {str(e)}", exc_info=True)
             raise
     
     @staticmethod
@@ -68,11 +65,11 @@ class UserService:
             if user:
                 await session.commit()
                 await session.refresh(user)
-                logger.info("user_updated", user_id=user.id, telegram_id=telegram_id)
+                logger.info(f"user_updated: user_id={user.id}, telegram_id={telegram_id}")
             return user
         except Exception as e:
             await session.rollback()
-            logger.error("user_update_failed", error=str(e), telegram_id=telegram_id, exc_info=True)
+            logger.error(f"user_update_failed: telegram_id={telegram_id}, error={str(e)}", exc_info=True)
             raise
     
     @staticmethod
@@ -85,7 +82,7 @@ class UserService:
             return result
         except Exception as e:
             await session.rollback()
-            logger.error("update_activity_failed", error=str(e), telegram_id=telegram_id, exc_info=True)
+            logger.error(f"update_activity_failed: telegram_id={telegram_id}, error={str(e)}", exc_info=True)
             raise
     
     @staticmethod
@@ -107,13 +104,13 @@ class UserService:
             log = await UserLogRepository.create(session, log_data, user.id)
             await session.commit()
             await session.refresh(log)
-            logger.info("log_created", log_id=log.id, user_id=user.id, action=log_data.action)
+            logger.info(f"log_created: log_id={log.id}, user_id={user.id}, action={log_data.action}")
             return log
         except NotFoundError:
             raise
         except Exception as e:
             await session.rollback()
-            logger.error("log_creation_failed", error=str(e), exc_info=True)
+            logger.error(f"log_creation_failed: {str(e)}", exc_info=True)
             raise ValidationError(f"Failed to create log: {str(e)}")
     
     @staticmethod
@@ -130,11 +127,11 @@ class UserService:
             
             user.language = language
             await session.commit()
-            logger.info("user_language_updated", user_id=user.id, language=language)
+            logger.info(f"user_language_updated: user_id={user.id}, language={language}")
             return True
         except Exception as e:
             await session.rollback()
-            logger.error("user_language_update_failed", error=str(e), telegram_id=telegram_id, exc_info=True)
+            logger.error(f"user_language_update_failed: telegram_id={telegram_id}, error={str(e)}", exc_info=True)
             raise
     
     @staticmethod
@@ -165,7 +162,7 @@ class UserService:
             raise
         except Exception as e:
             await session.rollback()
-            logger.error("mark_training_complete_failed", error=str(e), telegram_id=telegram_id, exc_info=True)
+            logger.error(f"mark_training_complete_failed: telegram_id={telegram_id}, error={str(e)}", exc_info=True)
             raise
     
     @staticmethod
@@ -188,10 +185,10 @@ class UserService:
                 "ppp:training_complete",
                 json.dumps({"telegram_id": telegram_id, "chat_id": telegram_id}).encode('utf-8')
             )
-            logger.info("training_complete_published", telegram_id=telegram_id, subscribers=result)
+            logger.info(f"training_complete_published: telegram_id={telegram_id}, subscribers={result}")
             return result > 0
         except Exception as e:
-            logger.error("redis_notification_failed", error=str(e), telegram_id=telegram_id, exc_info=True)
+            logger.error(f"redis_notification_failed: telegram_id={telegram_id}, error={str(e)}", exc_info=True)
             return False
         finally:
             if redis_client:

@@ -82,13 +82,13 @@ async def create_post(session: AsyncSession, post_data: PostCreate) -> Optional[
         await session.flush()
         await session.commit()
         await session.refresh(post)
-        logger.info("post_created", post_id=post.id, channel_id=channel.id)
+        logger.info(f"post_created: post_id={post.id}, channel_id={channel.id}")
         return post
     except NotFoundError:
         raise
     except Exception as e:
         await session.rollback()
-        logger.error("post_creation_failed", error=str(e), exc_info=True)
+        logger.error(f"post_creation_failed: {str(e)}", exc_info=True)
         raise ValidationError(f"Failed to create post: {str(e)}")
 
 
@@ -122,13 +122,13 @@ async def bulk_create_posts(session: AsyncSession, bulk_data: PostBulkCreate) ->
         await session.commit()
         for post in created_posts:
             await session.refresh(post)
-        logger.info("bulk_posts_created", count=len(created_posts), channel_id=channel.id)
+        logger.info(f"bulk_posts_created: count={len(created_posts)}, channel_id={channel.id}")
         return created_posts
     except NotFoundError:
         raise
     except Exception as e:
         await session.rollback()
-        logger.error("bulk_posts_creation_failed", error=str(e), exc_info=True)
+        logger.error(f"bulk_posts_creation_failed: {str(e)}", exc_info=True)
         raise ValidationError(f"Failed to bulk create posts: {str(e)}")
 
 
@@ -288,17 +288,14 @@ async def create_interaction(
         await session.commit()
         await session.refresh(interaction)
         logger.info(
-            "interaction_created",
-            interaction_id=interaction.id,
-            user_id=user.id,
-            post_id=post.id
+            f"interaction_created: interaction_id={interaction.id}, user_id={user.id}, post_id={post.id}"
         )
         return interaction
     except NotFoundError:
         raise
     except Exception as e:
         await session.rollback()
-        logger.error("interaction_creation_failed", error=str(e), exc_info=True)
+        logger.error(f"interaction_creation_failed: {str(e)}", exc_info=True)
         raise ValidationError(f"Failed to create interaction: {str(e)}")
 
 
@@ -420,7 +417,7 @@ async def update_post_relevance(
         return False
     except Exception as e:
         await session.rollback()
-        logger.error("post_relevance_update_failed", error=str(e), post_id=post_id, exc_info=True)
+        logger.error(f"post_relevance_update_failed: post_id={post_id}, error={str(e)}", exc_info=True)
         raise ValidationError(f"Failed to update post relevance: {str(e)}")
 
 

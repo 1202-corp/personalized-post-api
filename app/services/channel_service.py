@@ -46,11 +46,11 @@ class ChannelService:
             channel = await ChannelRepository.create(session, channel_data)
             await session.commit()
             await session.refresh(channel)
-            logger.info("channel_created", channel_id=channel.id, telegram_id=channel.telegram_id)
+            logger.info(f"channel_created: channel_id={channel.id}, telegram_id={channel.telegram_id}")
             return channel
         except Exception as e:
             await session.rollback()
-            logger.error("channel_creation_failed", error=str(e), exc_info=True)
+            logger.error(f"channel_creation_failed: {str(e)}", exc_info=True)
             raise
     
     @staticmethod
@@ -71,11 +71,11 @@ class ChannelService:
             await session.commit()
             if is_new:
                 await session.refresh(channel)
-                logger.info("channel_created", channel_id=channel.id, telegram_id=channel.telegram_id)
+                logger.info(f"channel_created: channel_id={channel.id}, telegram_id={channel.telegram_id}")
             return channel, is_new
         except Exception as e:
             await session.rollback()
-            logger.error("get_or_create_channel_failed", error=str(e), exc_info=True)
+            logger.error(f"get_or_create_channel_failed: {str(e)}", exc_info=True)
             raise
     
     @staticmethod
@@ -117,7 +117,7 @@ class ChannelService:
                 for ch in channels:
                     ch.is_default = True
                 await session.commit()
-                logger.info("channels_marked_as_default", count=len(channels))
+                logger.info(f"channels_marked_as_default: count={len(channels)}")
             except Exception as e:
                 await session.rollback()
                 logger.error("failed_to_mark_channels_as_default", error=str(e), exc_info=True)
@@ -149,17 +149,14 @@ class ChannelService:
             await session.commit()
             await session.refresh(user_channel)
             logger.info(
-                "user_channel_created",
-                user_channel_id=user_channel.id,
-                user_id=user.id,
-                channel_id=channel.id
+                f"user_channel_created: user_channel_id={user_channel.id}, user_id={user.id}, channel_id={channel.id}"
             )
             return channel
         except (NotFoundError, ValidationError):
             raise
         except Exception as e:
             await session.rollback()
-            logger.error("add_user_channel_failed", error=str(e), exc_info=True)
+            logger.error(f"add_user_channel_failed: {str(e)}", exc_info=True)
             raise ValidationError(f"Failed to add user channel: {str(e)}")
     
     @staticmethod

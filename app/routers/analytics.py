@@ -13,7 +13,29 @@ router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 @router.get("/overview")
 async def get_overview(db: AsyncSession = Depends(get_session)):
-    """Get overall platform statistics."""
+    """
+    Get overall platform statistics.
+    
+    Returns high-level metrics about the platform including total users,
+    posts, channels, interactions, and training statistics.
+    
+    **Example Request:**
+    ```
+    GET /api/v1/analytics/overview
+    ```
+    
+    **Example Response:**
+    ```json
+    {
+        "total_users": 1000,
+        "trained_users": 500,
+        "total_posts": 10000,
+        "total_channels": 50,
+        "total_interactions": 5000,
+        "like_rate": 0.75
+    }
+    ```
+    """
     return await analytics_service.get_overview_stats(db)
 
 
@@ -43,7 +65,51 @@ async def get_recommendation_stats(db: AsyncSession = Depends(get_session)):
 
 @router.get("/dashboard")
 async def get_dashboard(db: AsyncSession = Depends(get_session)):
-    """Get all analytics data for dashboard."""
+    """
+    Get all analytics data for dashboard.
+    
+    Returns comprehensive analytics data including overview, daily stats,
+    channel statistics, user retention, and recommendation effectiveness.
+    This is a convenience endpoint that aggregates all analytics endpoints.
+    
+    **Example Request:**
+    ```
+    GET /api/v1/analytics/dashboard
+    ```
+    
+    **Example Response:**
+    ```json
+    {
+        "overview": {
+            "total_users": 1000,
+            "trained_users": 500
+        },
+        "daily": [
+            {
+                "date": "2024-01-01",
+                "new_users": 10,
+                "interactions": 100
+            }
+        ],
+        "channels": [
+            {
+                "channel_id": 1,
+                "channel_title": "Example",
+                "posts_count": 100,
+                "interactions_count": 50
+            }
+        ],
+        "retention": {
+            "day_1": 0.8,
+            "day_7": 0.6
+        },
+        "recommendations": {
+            "avg_relevance": 0.75,
+            "total_recommendations": 1000
+        }
+    }
+    ```
+    """
     return {
         "overview": await analytics_service.get_overview_stats(db),
         "daily": await analytics_service.get_daily_stats(db, 7),
