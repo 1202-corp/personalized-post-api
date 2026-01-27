@@ -135,6 +135,37 @@ class UserService:
             raise
     
     @staticmethod
+    async def delete_user(
+        session: AsyncSession,
+        user_id: int,
+        hard: bool = False
+    ) -> Optional[User]:
+        """Delete a user (soft or hard) and cleanup related data for soft delete."""
+        from app.repositories.user_channel_repository import UserChannelRepository
+        from app.repositories.interaction_repository import InteractionRepository
+        
+        if hard:
+            # Hard delete user only (DB cascade rules may apply)
+            return await UserRepository.delete(session, user_id, hard=True)
+        
+        user = await UserRepository.get_by_id(session, user_id)
+        if not user or user.is_deleted:
+            return None
+        
+        # Remove user-channel links
+        user_channels = await UserChannelRepository.get_by_user_id(session, user.id)
+        for uc in user_channels:
+            await UserChannelRepository.delete(session, uc.id, hard=True)
+        
+        # Remove interactions
+        interactions = await InteractionRepository.get_by_user_id(session, user.id)
+        for interaction in interactions:
+            await InteractionRepository.delete(session, interaction.id, hard=True)
+        
+        # Soft delete user
+        return await UserRepository.soft_delete(session, user_id)
+    
+    @staticmethod
     async def mark_training_complete(
         session: AsyncSession,
         telegram_id: int

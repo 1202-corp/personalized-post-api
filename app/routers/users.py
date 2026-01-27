@@ -435,8 +435,9 @@ async def delete_user(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    # Delete using user.id
-    deleted_user = await UserRepository.delete(session, user.id, hard=hard)
+    # Delete using business logic (soft delete + cleanup or hard delete)
+    from app.services.user_service import UserService
+    deleted_user = await UserService.delete_user(session, user.id, hard=hard)
     if not deleted_user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
