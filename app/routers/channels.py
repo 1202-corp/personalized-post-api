@@ -184,6 +184,16 @@ async def get_user_channels(
     return channels
 
 
+@router.get("/{channel_username}/users")
+async def get_users_by_channel(
+    channel_username: str,
+    session: AsyncSession = Depends(get_session)
+):
+    """Get all users subscribed to a channel."""
+    users = await channel_service.get_users_by_channel(session, channel_username)
+    return users
+
+
 # ============== Parameterized routes ==============
 
 @router.get("/{channel_id}", response_model=ChannelResponse)

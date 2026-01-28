@@ -186,6 +186,26 @@ class ChannelService:
             if channel:
                 channels.append(channel)
         return channels
+    
+    @staticmethod
+    async def get_users_by_channel(session: AsyncSession, channel_username: str) -> List[dict]:
+        """Get all users subscribed to a channel."""
+        channel = await ChannelRepository.get_by_username(session, channel_username.lstrip("@"))
+        if not channel:
+            return []
+        
+        user_channels = await UserChannelRepository.get_by_channel_id(session, channel.id)
+        users = []
+        for uc in user_channels:
+            user = await UserRepository.get_by_id(session, uc.user_id)
+            if user and not user.is_deleted:
+                users.append({
+                    "telegram_id": user.telegram_id,
+                    "username": user.username,
+                    "is_trained": user.is_trained,
+                    "language": user.language or "en_US",
+                })
+        return users
 
 
 # Maintain backward compatibility
@@ -227,3 +247,8 @@ async def get_user_training_channels(session: AsyncSession, user_telegram_id: in
 async def get_user_channels(session: AsyncSession, user_telegram_id: int) -> List[Channel]:
     """Get all channels associated with user."""
     return await ChannelService.get_user_channels(session, user_telegram_id)
+
+
+async def get_users_by_channel(session: AsyncSession, channel_username: str) -> List[dict]:
+    """Get all users subscribed to a channel."""
+    return await ChannelService.get_users_by_channel(session, channel_username)
