@@ -487,6 +487,25 @@ async def get_posts_for_training(
                 content = cached_contents[post.id]
                 post.text = content.get("text")
     
+    # Interleave posts from different channels for variety
+    if posts:
+        from itertools import zip_longest
+        posts_by_channel = {}
+        for post in posts:
+            ch_id = post.channel_id
+            if ch_id not in posts_by_channel:
+                posts_by_channel[ch_id] = []
+            posts_by_channel[ch_id].append(post)
+        
+        # Round-robin interleave
+        interleaved = []
+        channel_lists = list(posts_by_channel.values())
+        for items in zip_longest(*channel_lists):
+            for item in items:
+                if item is not None:
+                    interleaved.append(item)
+        posts = interleaved
+    
     return posts
 
 
