@@ -18,7 +18,8 @@ from sqlalchemy import engine_from_config, pool
 from alembic import context
 
 # Import models for autogenerate - all models must be imported
-from app.models import Base
+from app.database import Base
+from app.models import User, Channel, Post, Interaction, UserLog, UserChannel
 from app.config import get_settings
 
 # Alembic Config object
