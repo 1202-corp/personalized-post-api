@@ -17,6 +17,13 @@ class UserStatus(str, enum.Enum):
     CHURNED = "churned"
 
 
+class UserRole(str, enum.Enum):
+    """User role in the system."""
+    GUEST = "guest"
+    MEMBER = "member"
+    ADMIN = "admin"
+
+
 class User(Base):
     """Telegram user model."""
     __tablename__ = "users"
@@ -28,9 +35,15 @@ class User(Base):
     last_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     
     status: Mapped[UserStatus] = mapped_column(
-        Enum(UserStatus), 
+        Enum(UserStatus),
         default=UserStatus.NEW,
-        nullable=False
+        nullable=False,
+    )
+    # User role in the system (guest, member, admin)
+    user_role: Mapped[UserRole] = mapped_column(
+        Enum(UserRole),
+        default=UserRole.GUEST,
+        nullable=False,
     )
     is_trained: Mapped[bool] = mapped_column(Boolean, default=False)
     bonus_channels_count: Mapped[int] = mapped_column(default=0)

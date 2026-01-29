@@ -1,8 +1,9 @@
 """Post business logic service."""
-from typing import Optional, List
-from datetime import datetime, timezone
-from sqlalchemy import select
+from typing import Optional, List, Dict, Any
+from datetime import datetime, timezone, timedelta
+from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
+import httpx
 from app.models.post import Post
 from app.models.channel import Channel
 from app.models.interaction import Interaction, InteractionType
@@ -15,8 +16,10 @@ from app.repositories.user_channel_repository import UserChannelRepository
 from app.schemas import PostCreate, PostBulkCreate, InteractionCreate, PostWithChannel
 from app.exceptions import NotFoundError, ValidationError
 from app.logging_config import get_logger
+from app.config import get_settings
 
 logger = get_logger(__name__)
+settings = get_settings()
 
 
 def _normalize_datetime(dt: datetime) -> datetime:
@@ -216,6 +219,164 @@ async def _get_latest_posts_from_any_channel(
     return [_post_to_post_with_channel(post, ch) for post, ch in result.all()]
 
 
+async def _check_channel_metadata_freshness(
+    session: AsyncSession,
+    channel_id: int
+) -> bool:
+    """
+    Check if channel has fresh training metadata (less than TTL hours old).
+    
+    Args:
+        session: Database session
+        channel_id: Channel ID
+        
+    Returns:
+        True if metadata is fresh, False otherwise
+    """
+    ttl_hours = settings.training_metadata_ttl_hours
+    threshold_time = datetime.now(timezone.utc) - timedelta(hours=ttl_hours)
+    
+    # Check if there are any posts created/updated after threshold
+    result = await session.execute(
+        select(func.count(Post.id))
+        .where(
+            Post.channel_id == channel_id,
+            Post.is_deleted == False,
+            Post.created_at >= threshold_time
+        )
+    )
+    count = result.scalar() or 0
+    
+    # If there are fresh posts, metadata is fresh
+    return count > 0
+
+
+async def _update_channel_training_metadata(
+    session: AsyncSession,
+    channel: Channel,
+    limit: int = 50
+) -> bool:
+    """
+    Update training metadata for a channel by fetching from user-bot.
+    
+    Strategy:
+    - Fetch up to limit posts from user-bot
+    - Update existing posts by telegram_message_id
+    - Add new posts
+    - Remove oldest posts if total exceeds limit (keep only limit most recent)
+    
+    Args:
+        session: Database session
+        channel: Channel object
+        limit: Maximum number of posts to keep
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        username = channel.username
+        if not username:
+            logger.warning(f"Cannot update metadata for channel {channel.id}: no username")
+            return False
+        
+        # Request metadata from user-bot
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{settings.user_bot_url}/cmd/scrape",
+                json={
+                    "channel_username": username,
+                    "limit": limit,
+                    "for_training": True,  # Don't store text, only metadata
+                }
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            if not result.get("success"):
+                logger.error(f"User-bot scrape failed for {username}: {result.get('message')}")
+                return False
+            
+            posts_data = result.get("posts", [])
+            if not posts_data:
+                logger.warning(f"No posts returned from user-bot for {username}")
+                return False
+        
+        # Process posts: update existing or create new
+        existing_message_ids = set()
+        for post_data in posts_data:
+            telegram_message_id = post_data.get("telegram_message_id")
+            if not telegram_message_id:
+                continue
+            
+            # Check if post already exists
+            existing_post = await PostRepository.get_by_channel_and_message(
+                session,
+                channel.id,
+                telegram_message_id
+            )
+            
+            if existing_post:
+                # Update existing post metadata (but keep text=null for training)
+                existing_post.media_type = post_data.get("media_type")
+                existing_post.media_file_id = post_data.get("media_file_id")
+                existing_post.posted_at = datetime.fromisoformat(
+                    post_data["posted_at"].replace("Z", "+00:00")
+                ) if post_data.get("posted_at") else datetime.now(timezone.utc)
+                existing_post.text = None  # Ensure text is null for training posts
+                existing_post.updated_at = datetime.now(timezone.utc)
+                existing_message_ids.add(telegram_message_id)
+            else:
+                # Create new post with metadata only (text=null)
+                posted_at = datetime.fromisoformat(
+                    post_data["posted_at"].replace("Z", "+00:00")
+                ) if post_data.get("posted_at") else datetime.now(timezone.utc)
+                
+                new_post = Post(
+                    channel_id=channel.id,
+                    telegram_message_id=telegram_message_id,
+                    text=None,  # No text for training posts
+                    media_type=post_data.get("media_type"),
+                    media_file_id=post_data.get("media_file_id"),
+                    posted_at=posted_at,
+                )
+                session.add(new_post)
+                existing_message_ids.add(telegram_message_id)
+        
+        await session.flush()
+        
+        # Remove oldest posts if total exceeds limit
+        # Get all posts for this channel (including ones we just added)
+        all_posts_result = await session.execute(
+            select(Post)
+            .where(
+                Post.channel_id == channel.id,
+                Post.is_deleted == False
+            )
+            .order_by(Post.posted_at.desc())
+        )
+        all_posts = list(all_posts_result.scalars().all())
+        
+        if len(all_posts) > limit:
+            # Keep only the limit most recent posts
+            posts_to_keep = all_posts[:limit]
+            posts_to_keep_ids = {p.id for p in posts_to_keep}
+            
+            # Soft delete the oldest posts
+            for post in all_posts:
+                if post.id not in posts_to_keep_ids:
+                    post.is_deleted = True
+                    post.deleted_at = datetime.now(timezone.utc)
+        
+        await session.commit()
+        logger.info(f"Updated training metadata for channel {username} (channel_id={channel.id}): {len(existing_message_ids)} posts")
+        return True
+        
+    except Exception as e:
+        await session.rollback()
+        logger.error(f"Error updating training metadata for channel {channel.username}: {e}", exc_info=True)
+        return False
+
+
 async def get_posts_for_training(
     session: AsyncSession,
     user_telegram_id: int,
@@ -225,12 +386,53 @@ async def get_posts_for_training(
     """Get recent posts from channels for training.
 
     Strategy:
-    1) Try to get posts by the provided channel usernames.
-    2) If nothing found, fallback to posts from the user's channels.
-    3) If still nothing, fallback to latest posts from any channel.
+    1) For each channel, check if metadata is fresh (less than TTL hours old)
+    2) If metadata is stale or missing, update it via user-bot
+    3) Return only metadata (text=null) from fresh posts
+    4) Fallback to user's channels or any channels if needed
     """
-    # Primary: by explicit channel usernames
-    posts = await _get_posts_by_channel_usernames(session, channel_usernames, limit_per_channel)
+    posts = []
+    metadata_limit = settings.training_posts_per_channel_limit
+    
+    # Process each channel username
+    for username in channel_usernames:
+        username_clean = username.lstrip("@").lower().strip()
+        if not username_clean:
+            continue
+        
+        channel = await ChannelRepository.get_by_username(session, username_clean)
+        if not channel:
+            # Channel doesn't exist in DB, skip for now (could trigger creation, but that's handled elsewhere)
+            continue
+        
+        # Check if metadata is fresh
+        is_fresh = await _check_channel_metadata_freshness(session, channel.id)
+        
+        if not is_fresh:
+            # Metadata is stale or missing, update it
+            logger.info(f"Metadata stale for channel {username_clean}, updating...")
+            await _update_channel_training_metadata(session, channel, metadata_limit)
+        
+        # Get fresh metadata posts (only metadata, text=null)
+        result = await session.execute(
+            select(Post, Channel)
+            .join(Channel)
+            .where(
+                Post.channel_id == channel.id,
+                Post.is_deleted == False,
+                Channel.is_deleted == False
+            )
+            .order_by(Post.posted_at.desc())
+            .limit(limit_per_channel)
+        )
+        
+        for post, ch in result.all():
+            # Ensure text is null for training posts
+            post_with_channel = _post_to_post_with_channel(post, ch)
+            # Override text to None for training posts
+            post_with_channel.text = None
+            posts.append(post_with_channel)
+    
     if posts:
         return posts
     
@@ -238,10 +440,17 @@ async def get_posts_for_training(
     limit = limit_per_channel * max(1, len(channel_usernames) or 1)
     posts = await _get_posts_from_user_channels(session, user_telegram_id, limit)
     if posts:
+        # Ensure text is null for training posts
+        for post in posts:
+            post.text = None
         return posts
     
     # Ultimate fallback: latest posts from any channels
-    return await _get_latest_posts_from_any_channel(session, limit)
+    fallback_posts = await _get_latest_posts_from_any_channel(session, limit)
+    # Ensure text is null for training posts
+    for post in fallback_posts:
+        post.text = None
+    return fallback_posts
 
 
 async def get_user_interactions(

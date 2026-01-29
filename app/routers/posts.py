@@ -119,10 +119,14 @@ async def get_training_posts(
     session: AsyncSession = Depends(get_session)
 ):
     """
-    Get posts for training from specified channels.
+    Get posts metadata for training from specified channels.
     
-    Retrieves recent posts from specified channels for user training.
+    Retrieves recent posts metadata (without text content) from specified channels for user training.
     Falls back to user's subscribed channels if specified channels have no posts.
+    
+    **Important:** This endpoint returns only metadata (IDs, media_type, media_file_id, posted_at).
+    Text and media content are stored in Redis cache and should be fetched separately.
+    The `text` field in the response is always `null` for training posts.
     
     **Request Body:**
     ```json
@@ -140,7 +144,7 @@ async def get_training_posts(
             "id": 1,
             "channel_id": 1,
             "telegram_message_id": 12345,
-            "text": "Post content",
+            "text": null,
             "media_type": "photo",
             "media_file_id": "123",
             "posted_at": "2024-01-01T12:00:00",

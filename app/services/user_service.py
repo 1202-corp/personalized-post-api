@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.user import User, UserStatus
+from app.models.user import User, UserStatus, UserRole
 from app.models.user_log import UserLog
 from app.repositories.user_repository import UserRepository
 from app.repositories.user_log_repository import UserLogRepository
@@ -164,7 +164,7 @@ class UserService:
         
         # Reset user state so that restored user behaves as NEW/guest
         user.status = UserStatus.NEW
-        user.is_trained = False
+        user.user_role = UserRole.GUEST
         user.bonus_channels_count = 0
         user.initial_best_post_sent = False
         user.preference_vector_cache = None
@@ -190,7 +190,9 @@ class UserService:
             # Update status to TRAINED if currently in TRAINING
             if user.status == UserStatus.TRAINING:
                 user.status = UserStatus.TRAINED
-                user.is_trained = True
+                # Update role to MEMBER when training is completed (if was GUEST)
+                if user.user_role == UserRole.GUEST:
+                    user.user_role = UserRole.MEMBER
                 await session.commit()
             
             # Notify main-bot via Redis pub/sub

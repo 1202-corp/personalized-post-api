@@ -35,10 +35,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware for MiniApp
+# CORS middleware for MiniApp and Admin Dashboard
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify allowed origins
+    allow_origins=["http://localhost:10304", "http://localhost:3000", "http://localhost:5173"],  # Admin dashboard and dev servers
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

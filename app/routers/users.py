@@ -101,7 +101,7 @@ async def create_or_get_user(
         "first_name": "John",
         "last_name": "Doe",
         "status": "NEW",
-        "is_trained": false,
+        "user_role": "guest",
         "bonus_channels_count": 0,
         "initial_best_post_sent": false,
         "language": "ru_RU",
@@ -187,7 +187,7 @@ async def get_feed_targets(
         {
             "telegram_id": 123456789,
             "status": "TRAINED",
-            "is_trained": true,
+            "user_role": "member",
             "bonus_channels_count": 2,
             "initial_best_post_sent": true
         }
@@ -230,7 +230,7 @@ async def get_user(
         "first_name": "John",
         "last_name": "Doe",
         "status": "TRAINED",
-        "is_trained": true,
+        "user_role": "member",
         "bonus_channels_count": 2,
         "initial_best_post_sent": true,
         "language": "ru_RU",
@@ -269,7 +269,7 @@ async def update_user(
     ```json
     {
         "status": "TRAINED",
-        "is_trained": true,
+        "user_role": "member",
         "bonus_channels_count": 2,
         "initial_best_post_sent": true
     }
@@ -284,7 +284,7 @@ async def update_user(
         "first_name": "John",
         "last_name": "Doe",
         "status": "TRAINED",
-        "is_trained": true,
+        "user_role": "member",
         "bonus_channels_count": 2,
         "initial_best_post_sent": true,
         "language": "ru_RU",

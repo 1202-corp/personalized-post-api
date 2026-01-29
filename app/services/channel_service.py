@@ -18,6 +18,22 @@ class ChannelService:
     """Service for channel operations."""
     
     @staticmethod
+    def _get_default_usernames() -> List[str]:
+        """Get list of default training channel usernames from config."""
+        return [
+            u.lstrip("@").lower()
+            for u in settings.default_training_channels.split(",")
+            if u.strip()
+        ]
+    
+    @staticmethod
+    def _determine_is_default(channel_data: ChannelCreate) -> bool:
+        """Determine if channel should be treated as default training channel."""
+        default_usernames = ChannelService._get_default_usernames()
+        username_normalized = (channel_data.username or "").lstrip("@").lower()
+        return channel_data.is_default or username_normalized in default_usernames
+    
+    @staticmethod
     async def get_channel_by_telegram_id(session: AsyncSession, telegram_id: int) -> Optional[Channel]:
         """Get channel by Telegram ID."""
         return await ChannelRepository.get_by_telegram_id(session, telegram_id)
@@ -32,16 +48,7 @@ class ChannelService:
         """Create a new channel."""
         try:
             # Determine if this channel should be treated as a default training channel
-            default_usernames = [
-                u.lstrip("@").lower()
-                for u in settings.default_training_channels.split(",")
-                if u.strip()
-            ]
-            username_normalized = (channel_data.username or "").lstrip("@").lower()
-            is_default = channel_data.is_default or username_normalized in default_usernames
-            
-            # Update channel_data with is_default
-            channel_data.is_default = is_default
+            channel_data.is_default = ChannelService._determine_is_default(channel_data)
             
             channel = await ChannelRepository.create(session, channel_data)
             await session.commit()
@@ -58,14 +65,7 @@ class ChannelService:
         """Get existing channel or create new one. Returns (channel, is_new)."""
         try:
             # Determine if this channel should be treated as a default training channel
-            default_usernames = [
-                u.lstrip("@").lower()
-                for u in settings.default_training_channels.split(",")
-                if u.strip()
-            ]
-            username_normalized = (channel_data.username or "").lstrip("@").lower()
-            is_default = channel_data.is_default or username_normalized in default_usernames
-            channel_data.is_default = is_default
+            channel_data.is_default = ChannelService._determine_is_default(channel_data)
             
             channel, is_new = await ChannelRepository.get_or_create(session, channel_data)
             await session.commit()
@@ -92,11 +92,7 @@ class ChannelService:
             return channels
         
         # Fallback: derive defaults from configuration
-        default_usernames = [
-            u.lstrip("@").lower()
-            for u in settings.default_training_channels.split(",")
-            if u.strip()
-        ]
+        default_usernames = ChannelService._get_default_usernames()
         if not default_usernames:
             return []
         
@@ -160,9 +156,14 @@ class ChannelService:
             raise ValidationError(f"Failed to add user channel: {str(e)}")
     
     @staticmethod
+    async def _get_user_or_none(session: AsyncSession, user_telegram_id: int):
+        """Helper to get user by telegram_id or return None."""
+        return await UserRepository.get_by_telegram_id(session, user_telegram_id)
+    
+    @staticmethod
     async def get_user_training_channels(session: AsyncSession, user_telegram_id: int) -> List[Channel]:
         """Get all channels user is using for training."""
-        user = await UserRepository.get_by_telegram_id(session, user_telegram_id)
+        user = await ChannelService._get_user_or_none(session, user_telegram_id)
         if not user:
             return []
         
@@ -171,21 +172,21 @@ class ChannelService:
     @staticmethod
     async def get_user_channels(session: AsyncSession, user_telegram_id: int) -> List[Channel]:
         """Get all channels associated with user."""
-        user = await UserRepository.get_by_telegram_id(session, user_telegram_id)
+        user = await ChannelService._get_user_or_none(session, user_telegram_id)
         if not user:
             return []
         
         user_channels = await UserChannelRepository.get_by_user_id(session, user.id)
-        channel_ids = [uc.channel_id for uc in user_channels]
-        if not channel_ids:
+        if not user_channels:
             return []
         
-        channels = []
-        for channel_id in channel_ids:
-            channel = await ChannelRepository.get_by_id(session, channel_id)
-            if channel:
-                channels.append(channel)
-        return channels
+        # Optimize: get all channels in one query instead of looping
+        channel_ids = [uc.channel_id for uc in user_channels]
+        from sqlalchemy import select
+        result = await session.execute(
+            select(Channel).where(Channel.id.in_(channel_ids))
+        )
+        return list(result.scalars().all())
 
 
 # Maintain backward compatibility
