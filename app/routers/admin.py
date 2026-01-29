@@ -330,7 +330,12 @@ async def list_channels(
     """List all channels with stats."""
     from app.repositories.channel_repository import ChannelRepository
     from app.repositories.post_repository import PostRepository
+    from app.config import get_settings
     from sqlalchemy import select, func
+    from datetime import datetime, timezone, timedelta
+    
+    settings = get_settings()
+    ttl_hours = settings.training_metadata_ttl_hours
     
     # Get all channels with soft delete filter
     all_channels = await ChannelRepository.get_all(db)
@@ -338,10 +343,27 @@ async def list_channels(
     
     total = len(all_channels)
     
-    # Get post counts for each channel
+    # Get post counts and TTL info for each channel
     channels_with_stats = []
+    now = datetime.now(timezone.utc)
+    
     for channel in channels:
         posts = await PostRepository.get_all_by_channel(db, channel.id)
+        
+        # Calculate remaining TTL for posts
+        # Find the oldest post's created_at time (this determines when TTL expires)
+        posts_ttl_remaining_seconds = None
+        if posts:
+            # Filter posts with created_at and find the oldest one
+            posts_with_created = [p for p in posts if p.created_at]
+            if posts_with_created:
+                oldest_post_created = min(p.created_at for p in posts_with_created)
+                # Calculate when TTL expires (created_at + TTL hours)
+                ttl_expires_at = oldest_post_created.replace(tzinfo=timezone.utc) + timedelta(hours=ttl_hours)
+                # Calculate remaining time
+                remaining = (ttl_expires_at - now).total_seconds()
+                posts_ttl_remaining_seconds = max(0, int(remaining)) if remaining > 0 else 0
+        
         channels_with_stats.append({
             "id": channel.id,
             "telegram_id": channel.telegram_id,
@@ -349,6 +371,7 @@ async def list_channels(
             "title": channel.title,
             "is_default": channel.is_default,
             "posts_count": len(posts),
+            "posts_ttl_remaining_seconds": posts_ttl_remaining_seconds,
         })
     
     return {
