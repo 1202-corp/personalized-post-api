@@ -7,7 +7,7 @@ from typing import Optional
 from sqlalchemy import func, select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.models.post import Post
 from app.models.interaction import Interaction
 from app.models.channel import Channel
@@ -22,10 +22,10 @@ async def get_overview_stats(db: AsyncSession) -> dict:
         select(func.count(User.id)).where(User.is_deleted == False)
     )
     
-    # Trained users
+    # Trained users (MEMBER or ADMIN role)
     trained_users = await db.scalar(
         select(func.count(User.id)).where(
-            User.is_trained == True,
+            User.user_role.in_([UserRole.MEMBER, UserRole.ADMIN]),
             User.is_deleted == False
         )
     )
@@ -189,10 +189,10 @@ async def get_user_retention(db: AsyncSession, days: int = 7) -> dict:
         select(func.count(User.id)).where(User.is_deleted == False)
     )
     
-    # Users who completed training
+    # Users who completed training (MEMBER or ADMIN role)
     trained_users = await db.scalar(
         select(func.count(User.id)).where(
-            User.is_trained == True,
+            User.user_role.in_([UserRole.MEMBER, UserRole.ADMIN]),
             User.is_deleted == False
         )
     )

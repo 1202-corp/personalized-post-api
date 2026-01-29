@@ -119,10 +119,14 @@ async def get_training_posts(
     session: AsyncSession = Depends(get_session)
 ):
     """
-    Get posts for training from specified channels.
+    Get posts metadata for training from specified channels.
     
-    Retrieves recent posts from specified channels for user training.
+    Retrieves recent posts metadata (without text content) from specified channels for user training.
     Falls back to user's subscribed channels if specified channels have no posts.
+    
+    **Important:** This endpoint returns only metadata (IDs, media_type, media_file_id, posted_at).
+    Text and media content are stored in Redis cache and should be fetched separately.
+    The `text` field in the response is always `null` for training posts.
     
     **Request Body:**
     ```json
@@ -140,7 +144,7 @@ async def get_training_posts(
             "id": 1,
             "channel_id": 1,
             "telegram_message_id": 12345,
-            "text": "Post content",
+            "text": null,
             "media_type": "photo",
             "media_file_id": "123",
             "posted_at": "2024-01-01T12:00:00",
@@ -264,17 +268,64 @@ async def update_post(
     post_update: PostUpdate,
     session: AsyncSession = Depends(get_session)
 ):
-    """Update post fields."""
+    """Update post fields. Text is stored in Redis, not in DB."""
+    from app.services.post_cache_service import get_post_cache_service
+    
     update_data = post_update.model_dump(exclude_unset=True)
+    
+    # Extract text from update_data - it should go to Redis, not DB
+    text_to_cache = update_data.pop('text', None)
+    
+    # Update post fields (excluding text)
     post = await PostRepository.update(session, post_id, **update_data)
     if not post:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Post not found"
         )
+    
+    # Store text in Redis if provided
+    if text_to_cache is not None:
+        cache_service = get_post_cache_service()
+        await cache_service.set_post_content(
+            post_id=post_id,
+            text=text_to_cache,
+            media_type=update_data.get('media_type'),
+            media_data=None  # Media data should be handled separately if needed
+        )
+    
     await session.commit()
     await session.refresh(post)
     return post
+
+
+@router.get("/{post_id}/content")
+async def get_post_content(
+    post_id: int,
+    session: AsyncSession = Depends(get_session)
+):
+    """Get post content (text and media) from Redis cache."""
+    from app.services.post_cache_service import get_post_cache_service
+    from app.repositories.post_repository import PostRepository
+    
+    # Verify post exists
+    post = await PostRepository.get_by_id(session, post_id)
+    if not post:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Post not found"
+        )
+    
+    cache_service = get_post_cache_service()
+    content = await cache_service.get_post_content(post_id)
+    
+    if not content:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Post content not found in cache"
+        )
+    
+    return content
 
 
 @router.delete("/{post_id}", status_code=status.HTTP_204_NO_CONTENT)

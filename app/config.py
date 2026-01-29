@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     # Redis
     redis_url: str = "redis://localhost:6379/0"
     
+    # User-bot service URL (for fetching training metadata)
+    user_bot_url: str = "http://user-bot:8001"
+    
     # App settings
     debug: bool = False
     
@@ -27,6 +30,10 @@ class Settings(BaseSettings):
     
     # Default training channels
     default_training_channels: str = "@durov,@telegram"
+    
+    # Training metadata settings
+    training_metadata_ttl_hours: int = 6
+    training_posts_per_channel_limit: int = 50
     
     # Admin Dashboard JWT Authentication
     admin_username: str = "superadmin"

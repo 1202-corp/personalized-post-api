@@ -93,6 +93,7 @@ async def get_ab_test_results(db: AsyncSession) -> dict:
     
     # Get all users (excluding deleted)
     from app.repositories.user_repository import UserRepository
+    from app.models.user import UserRole
     all_users = await UserRepository.get_all(db)
     
     # Assign users to variants and calculate metrics
@@ -100,7 +101,9 @@ async def get_ab_test_results(db: AsyncSession) -> dict:
     
     for user in all_users:
         variant = get_user_variant(user.telegram_id, AB_TEST_CONFIG["test_name"])
-        variant_users[variant].append((user.id, user.is_trained, DEFAULT_TRAINING_COUNT))
+        # Check if user is trained (MEMBER or ADMIN role)
+        is_trained = user.user_role in (UserRole.MEMBER, UserRole.ADMIN)
+        variant_users[variant].append((user.id, is_trained, DEFAULT_TRAINING_COUNT))
     
     for variant_name, user_list in variant_users.items():
         trained_users = [(u[0], u[2]) for u in user_list if u[1]]  # Only trained users

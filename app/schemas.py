@@ -3,7 +3,7 @@ from typing import Optional, List
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models import UserStatus, InteractionType
+from app.models import UserStatus, UserRole, InteractionType
 
 
 # ============== User Schemas ==============
@@ -39,21 +39,34 @@ class UserUpdate(BaseModel):
     
     Example:
         {
-            "status": "TRAINED",
-            "is_trained": true,
-            "bonus_channels_count": 2
+            "status": "active",
+            "bonus_channels_count": 2,
+            "user_role": "admin"
         }
     """
-    status: Optional[UserStatus] = Field(None, description="User status (NEW, ACTIVE, TRAINED, INACTIVE)")
-    is_trained: Optional[bool] = Field(None, description="Whether user has completed training")
-    bonus_channels_count: Optional[int] = Field(None, description="Number of bonus channels available", ge=0)
-    initial_best_post_sent: Optional[bool] = Field(None, description="Whether initial best post was sent")
+    status: Optional[UserStatus] = Field(
+        None,
+        description="User status (e.g. NEW, TRAINING, ACTIVE, CHURNED)",
+    )
+    bonus_channels_count: Optional[int] = Field(
+        None,
+        description="Number of bonus channels available",
+        ge=0,
+    )
+    initial_best_post_sent: Optional[bool] = Field(
+        None,
+        description="Whether initial best post was sent",
+    )
+    user_role: Optional[UserRole] = Field(
+        None,
+        description="User role (guest, member, admin). guest = not trained, member = trained, admin = admin",
+    )
 
 
 class UserResponse(UserBase):
     id: int
     status: UserStatus
-    is_trained: bool
+    user_role: UserRole
     bonus_channels_count: int
     initial_best_post_sent: Optional[bool] = False
     language: Optional[str] = "en_US"
@@ -61,6 +74,11 @@ class UserResponse(UserBase):
     created_at: datetime
     
     model_config = ConfigDict(from_attributes=True)
+    
+    @property
+    def is_trained(self) -> bool:
+        """Backward compatibility: check if user is trained based on role."""
+        return self.user_role in (UserRole.MEMBER, UserRole.ADMIN)
 
 
 class LanguageUpdate(BaseModel):
@@ -81,11 +99,18 @@ class LanguageResponse(BaseModel):
 class UserFeedTargetResponse(BaseModel):
     telegram_id: int
     status: UserStatus
-    is_trained: Optional[bool] = None
     bonus_channels_count: Optional[int] = None
     initial_best_post_sent: Optional[bool] = None
+    user_role: Optional[UserRole] = None
 
     model_config = ConfigDict(from_attributes=True)
+    
+    @property
+    def is_trained(self) -> bool:
+        """Backward compatibility: check if user is trained based on role."""
+        if self.user_role is None:
+            return False
+        return self.user_role in (UserRole.MEMBER, UserRole.ADMIN)
 
 
 class UserActivityUpdate(BaseModel):

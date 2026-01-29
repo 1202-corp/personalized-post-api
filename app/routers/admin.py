@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import jwt  # pyjwt
 
 from app.database import get_session
-from app.models import User, Channel, Post, Interaction, UserChannel
+from app.models import User, Channel, Post, Interaction, UserChannel, UserRole
 from app.config import get_settings
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -84,9 +84,9 @@ class RefreshTokenRequest(BaseModel):
 
 
 class UserUpdate(BaseModel):
-    is_trained: Optional[bool] = None
     language: Optional[str] = None
     bonus_channels_count: Optional[int] = None
+    user_role: Optional[UserRole] = None
 
 
 class ChannelUpdate(BaseModel):
@@ -152,23 +152,42 @@ async def refresh_token(refresh_data: RefreshTokenRequest):
 async def list_users(
     skip: int = 0,
     limit: int = 50,
-    trained_only: bool = False,
+    trained_only: bool = False,  # Deprecated: use user_role instead
+    q: Optional[str] = None,
+    user_role: Optional[UserRole] = None,
     db: AsyncSession = Depends(get_session),
     current_admin: dict = Depends(get_current_admin),
 ):
     """List all users with pagination."""
-    from app.repositories.user_repository import UserRepository
-    from sqlalchemy import select, func
+    from sqlalchemy import select, func, or_
     
-    query = select(User).where(User.is_deleted == False).offset(skip).limit(limit)
+    base_query = select(User).where(User.is_deleted == False)
     if trained_only:
-        query = query.where(User.is_trained == True)
+        # Deprecated: use user_role instead. For backward compatibility, filter by MEMBER or ADMIN
+        base_query = base_query.where(User.user_role.in_([UserRole.MEMBER, UserRole.ADMIN]))
+    if user_role:
+        base_query = base_query.where(User.user_role == user_role)
+    if q:
+        q_like = f"%{q}%"
+        filters = [
+            User.username.ilike(q_like),
+            User.first_name.ilike(q_like),
+            User.last_name.ilike(q_like),
+        ]
+        if q.isdigit():
+            try:
+                tg_id = int(q)
+                filters.append(User.telegram_id == tg_id)
+            except ValueError:
+                pass
+        base_query = base_query.where(or_(*filters))
     
+    total_query = select(func.count(User.id)).select_from(base_query.subquery())
+    total = await db.scalar(total_query)
+    
+    query = base_query.offset(skip).limit(limit)
     result = await db.execute(query)
     users = result.scalars().all()
-    
-    total_query = select(func.count(User.id)).where(User.is_deleted == False)
-    total = await db.scalar(total_query)
     
     return {
         "total": total or 0,
@@ -179,7 +198,10 @@ async def list_users(
                 "id": u.id,
                 "telegram_id": u.telegram_id,
                 "username": u.username,
-                "is_trained": u.is_trained,
+                "first_name": u.first_name,
+                "last_name": u.last_name,
+                "status": u.status.value,
+                "user_role": u.user_role.value,
                 "language": u.language,
                 "bonus_channels_count": u.bonus_channels_count,
                 "created_at": u.created_at.isoformat() if u.created_at else None,
@@ -224,7 +246,8 @@ async def get_user_details(
         "id": user.id,
         "telegram_id": user.telegram_id,
         "username": user.username,
-        "is_trained": user.is_trained,
+        "status": user.status.value,
+        "user_role": user.user_role.value,
         "language": user.language,
         "bonus_channels_count": user.bonus_channels_count,
         "initial_best_post_sent": user.initial_best_post_sent,
@@ -248,21 +271,30 @@ async def update_user(
     """Update user settings."""
     from app.repositories.user_repository import UserRepository
     from app.schemas import UserUpdate as UserUpdateSchema
-    from app.models.user import UserStatus
     
     user = await UserRepository.get_by_id(db, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Create UserUpdate schema from admin update
-    user_update = UserUpdateSchema(
-        is_trained=update.is_trained,
-        bonus_channels_count=update.bonus_channels_count
-    )
-    updated_user = await UserRepository.update(db, user.telegram_id, user_update)
-    
+    # Create UserUpdate schema from admin update - only include fields that are actually set
+    update_dict = {}
+    if update.bonus_channels_count is not None:
+        update_dict["bonus_channels_count"] = update.bonus_channels_count
+    if update.user_role is not None:
+        update_dict["user_role"] = update.user_role
+        # When removing admin role, determine role based on previous role
+        if user.user_role == UserRole.ADMIN and update.user_role != UserRole.ADMIN:
+            # User was admin, now removing admin role
+            # If was MEMBER before becoming admin, restore to MEMBER, otherwise GUEST
+            # For simplicity, set to MEMBER if they had training (we can't track previous role easily)
+            # Actually, just use the provided role
+            pass  # Use the provided role
     if update.language is not None:
-        user.language = update.language
+        update_dict["language"] = update.language
+    
+    if update_dict:
+        user_update = UserUpdateSchema(**update_dict)
+        updated_user = await UserRepository.update(db, user.telegram_id, user_update)
     
     await db.commit()
     return {"status": "updated", "user_id": user_id}
@@ -298,7 +330,12 @@ async def list_channels(
     """List all channels with stats."""
     from app.repositories.channel_repository import ChannelRepository
     from app.repositories.post_repository import PostRepository
+    from app.config import get_settings
     from sqlalchemy import select, func
+    from datetime import datetime, timezone, timedelta
+    
+    settings = get_settings()
+    ttl_hours = settings.training_metadata_ttl_hours
     
     # Get all channels with soft delete filter
     all_channels = await ChannelRepository.get_all(db)
@@ -306,10 +343,27 @@ async def list_channels(
     
     total = len(all_channels)
     
-    # Get post counts for each channel
+    # Get post counts and TTL info for each channel
     channels_with_stats = []
+    now = datetime.now(timezone.utc)
+    
     for channel in channels:
         posts = await PostRepository.get_all_by_channel(db, channel.id)
+        
+        # Calculate remaining TTL for posts
+        # Find the oldest post's created_at time (this determines when TTL expires)
+        posts_ttl_remaining_seconds = None
+        if posts:
+            # Filter posts with created_at and find the oldest one
+            posts_with_created = [p for p in posts if p.created_at]
+            if posts_with_created:
+                oldest_post_created = min(p.created_at for p in posts_with_created)
+                # Calculate when TTL expires (created_at + TTL hours)
+                ttl_expires_at = oldest_post_created.replace(tzinfo=timezone.utc) + timedelta(hours=ttl_hours)
+                # Calculate remaining time
+                remaining = (ttl_expires_at - now).total_seconds()
+                posts_ttl_remaining_seconds = max(0, int(remaining)) if remaining > 0 else 0
+        
         channels_with_stats.append({
             "id": channel.id,
             "telegram_id": channel.telegram_id,
@@ -317,6 +371,7 @@ async def list_channels(
             "title": channel.title,
             "is_default": channel.is_default,
             "posts_count": len(posts),
+            "posts_ttl_remaining_seconds": posts_ttl_remaining_seconds,
         })
     
     return {
@@ -387,8 +442,8 @@ async def reset_user_training(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Update user status
-    user.is_trained = False
+    # Update user status - reset to GUEST role
+    user.user_role = UserRole.GUEST
     user.initial_best_post_sent = False
     
     # Delete their interactions

@@ -1,8 +1,9 @@
 """Post business logic service."""
-from typing import Optional, List
-from datetime import datetime, timezone
-from sqlalchemy import select
+from typing import Optional, List, Dict, Any
+from datetime import datetime, timezone, timedelta
+from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
+import httpx
 from app.models.post import Post
 from app.models.channel import Channel
 from app.models.interaction import Interaction, InteractionType
@@ -15,8 +16,10 @@ from app.repositories.user_channel_repository import UserChannelRepository
 from app.schemas import PostCreate, PostBulkCreate, InteractionCreate, PostWithChannel
 from app.exceptions import NotFoundError, ValidationError
 from app.logging_config import get_logger
+from app.config import get_settings
 
 logger = get_logger(__name__)
+settings = get_settings()
 
 
 def _normalize_datetime(dt: datetime) -> datetime:
@@ -29,11 +32,15 @@ def _normalize_datetime(dt: datetime) -> datetime:
 
 
 def _post_to_post_with_channel(post: Post, channel: Channel) -> PostWithChannel:
-    """Convert Post and Channel to PostWithChannel schema."""
+    """Convert Post and Channel to PostWithChannel schema.
+    
+    Note: text field is always None as it's stored in Redis, not DB.
+    Clients should fetch text from Redis cache separately.
+    """
     return PostWithChannel(
         id=post.id,
         telegram_message_id=post.telegram_message_id,
-        text=post.text,
+        text=None,  # Text stored in Redis, not DB - fetch separately via cache API
         media_type=post.media_type,
         media_file_id=post.media_file_id,
         posted_at=post.posted_at,
@@ -62,7 +69,9 @@ async def get_post_by_channel_and_message(
 
 
 async def create_post(session: AsyncSession, post_data: PostCreate) -> Optional[Post]:
-    """Create a new post."""
+    """Create a new post. Text and media are stored in Redis, not in DB."""
+    from app.services.post_cache_service import get_post_cache_service
+    
     try:
         channel = await ChannelRepository.get_by_telegram_id(session, post_data.channel_telegram_id)
         if not channel:
@@ -70,10 +79,10 @@ async def create_post(session: AsyncSession, post_data: PostCreate) -> Optional[
         
         normalized_posted_at = _normalize_datetime(post_data.posted_at)
         
+        # Create post (text is stored in Redis, not DB - field removed from model)
         post = Post(
             channel_id=channel.id,
             telegram_message_id=post_data.telegram_message_id,
-            text=post_data.text,
             media_type=post_data.media_type,
             media_file_id=post_data.media_file_id,
             posted_at=normalized_posted_at,
@@ -82,7 +91,20 @@ async def create_post(session: AsyncSession, post_data: PostCreate) -> Optional[
         await session.flush()
         await session.commit()
         await session.refresh(post)
-        logger.info(f"post_created: post_id={post.id}, channel_id={channel.id}")
+        
+        # Store text and media in Redis cache if provided
+        # This ensures all users get content from Redis, not by requesting user-bot each time
+        if post_data.text or post_data.media_file_id:
+            cache_service = get_post_cache_service()
+            await cache_service.set_post_content(
+                post_id=post.id,
+                text=post_data.text,
+                media_type=post_data.media_type,
+                media_data=None  # Media data (bytes) should be fetched and cached separately via user-bot if needed
+            )
+            logger.debug(f"Cached post content in Redis (post_id={post.id}, has_text={post_data.text is not None})")
+        
+        logger.info(f"post_created: post_id={post.id}, channel_id={channel.id}, text_in_redis={post_data.text is not None}")
         return post
     except NotFoundError:
         raise
@@ -93,13 +115,17 @@ async def create_post(session: AsyncSession, post_data: PostCreate) -> Optional[
 
 
 async def bulk_create_posts(session: AsyncSession, bulk_data: PostBulkCreate) -> List[Post]:
-    """Bulk create posts for a channel."""
+    """Bulk create posts for a channel. Text and media are stored in Redis, not in DB."""
+    from app.services.post_cache_service import get_post_cache_service
+    
     try:
         channel = await ChannelRepository.get_by_telegram_id(session, bulk_data.channel_telegram_id)
         if not channel:
             raise NotFoundError(f"Channel with telegram_id {bulk_data.channel_telegram_id} not found")
         
         created_posts = []
+        cache_service = get_post_cache_service()
+        
         for post_data in bulk_data.posts:
             existing = await PostRepository.get_by_channel_telegram_id_and_message(
                 session, bulk_data.channel_telegram_id, post_data.telegram_message_id
@@ -107,23 +133,35 @@ async def bulk_create_posts(session: AsyncSession, bulk_data: PostBulkCreate) ->
             if existing:
                 continue
             
+            # Create post (text is stored in Redis, not DB - field removed from model)
             post = Post(
                 channel_id=channel.id,
                 telegram_message_id=post_data.telegram_message_id,
-                text=post_data.text,
                 media_type=post_data.media_type,
                 media_file_id=post_data.media_file_id,
                 posted_at=_normalize_datetime(post_data.posted_at),
             )
             session.add(post)
-            created_posts.append(post)
+            created_posts.append((post, post_data))  # Store post_data for Redis caching
         
         await session.flush()
         await session.commit()
-        for post in created_posts:
+        
+        # Store text and media in Redis cache for each created post
+        # This ensures all users get content from Redis, not by requesting user-bot each time
+        for post, post_data in created_posts:
             await session.refresh(post)
+            if post_data.text or post_data.media_file_id:
+                await cache_service.set_post_content(
+                    post_id=post.id,
+                    text=post_data.text,
+                    media_type=post_data.media_type,
+                    media_data=None  # Media data (bytes) should be fetched and cached separately via user-bot if needed
+                )
+                logger.debug(f"Cached post content in Redis (post_id={post.id}, has_text={post_data.text is not None})")
+        
         logger.info(f"bulk_posts_created: count={len(created_posts)}, channel_id={channel.id}")
-        return created_posts
+        return [post for post, _ in created_posts]
     except NotFoundError:
         raise
     except Exception as e:
@@ -216,6 +254,164 @@ async def _get_latest_posts_from_any_channel(
     return [_post_to_post_with_channel(post, ch) for post, ch in result.all()]
 
 
+async def _check_channel_metadata_freshness(
+    session: AsyncSession,
+    channel_id: int
+) -> bool:
+    """
+    Check if channel has fresh training metadata (less than TTL hours old).
+    
+    Args:
+        session: Database session
+        channel_id: Channel ID
+        
+    Returns:
+        True if metadata is fresh, False otherwise
+    """
+    ttl_hours = settings.training_metadata_ttl_hours
+    threshold_time = datetime.now(timezone.utc) - timedelta(hours=ttl_hours)
+    
+    # Check if there are any posts created/updated after threshold
+    result = await session.execute(
+        select(func.count(Post.id))
+        .where(
+            Post.channel_id == channel_id,
+            Post.is_deleted == False,
+            Post.created_at >= threshold_time
+        )
+    )
+    count = result.scalar() or 0
+    
+    # If there are fresh posts, metadata is fresh
+    return count > 0
+
+
+async def _update_channel_training_metadata(
+    session: AsyncSession,
+    channel: Channel,
+    limit: int = 50
+) -> bool:
+    """
+    Update training metadata for a channel by fetching from user-bot.
+    
+    Strategy:
+    - Fetch up to limit posts from user-bot
+    - Update existing posts by telegram_message_id
+    - Add new posts
+    - Remove oldest posts if total exceeds limit (keep only limit most recent)
+    
+    Args:
+        session: Database session
+        channel: Channel object
+        limit: Maximum number of posts to keep
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        username = channel.username
+        if not username:
+            logger.warning(f"Cannot update metadata for channel {channel.id}: no username")
+            return False
+        
+        # Request metadata from user-bot
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{settings.user_bot_url}/cmd/scrape",
+                json={
+                    "channel_username": username,
+                    "limit": limit,
+                    "for_training": True,  # Don't store text, only metadata
+                }
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            if not result.get("success"):
+                logger.error(f"User-bot scrape failed for {username}: {result.get('message')}")
+                return False
+            
+            posts_data = result.get("posts", [])
+            if not posts_data:
+                logger.warning(f"No posts returned from user-bot for {username}")
+                return False
+        
+        # Process posts: update existing or create new
+        existing_message_ids = set()
+        for post_data in posts_data:
+            telegram_message_id = post_data.get("telegram_message_id")
+            if not telegram_message_id:
+                continue
+            
+            # Check if post already exists
+            existing_post = await PostRepository.get_by_channel_and_message(
+                session,
+                channel.id,
+                telegram_message_id
+            )
+            
+            if existing_post:
+                # Update existing post metadata (but keep text=null for training)
+                existing_post.media_type = post_data.get("media_type")
+                existing_post.media_file_id = post_data.get("media_file_id")
+                existing_post.posted_at = datetime.fromisoformat(
+                    post_data["posted_at"].replace("Z", "+00:00")
+                ) if post_data.get("posted_at") else datetime.now(timezone.utc)
+                # Note: text field removed from model - stored in Redis only
+                existing_post.updated_at = datetime.now(timezone.utc)
+                existing_message_ids.add(telegram_message_id)
+            else:
+                # Create new post with metadata only (text stored in Redis, not DB)
+                posted_at = datetime.fromisoformat(
+                    post_data["posted_at"].replace("Z", "+00:00")
+                ) if post_data.get("posted_at") else datetime.now(timezone.utc)
+                
+                new_post = Post(
+                    channel_id=channel.id,
+                    telegram_message_id=telegram_message_id,
+                    # Note: text field removed from model - stored in Redis only
+                    media_type=post_data.get("media_type"),
+                    media_file_id=post_data.get("media_file_id"),
+                    posted_at=posted_at,
+                )
+                session.add(new_post)
+                existing_message_ids.add(telegram_message_id)
+        
+        await session.flush()
+        
+        # Remove oldest posts if total exceeds limit
+        # Get all posts for this channel (including ones we just added)
+        all_posts_result = await session.execute(
+            select(Post)
+            .where(
+                Post.channel_id == channel.id,
+                Post.is_deleted == False
+            )
+            .order_by(Post.posted_at.desc())
+        )
+        all_posts = list(all_posts_result.scalars().all())
+        
+        if len(all_posts) > limit:
+            # Keep only the limit most recent posts
+            posts_to_keep = all_posts[:limit]
+            posts_to_keep_ids = {p.id for p in posts_to_keep}
+            
+            # Soft delete the oldest posts
+            for post in all_posts:
+                if post.id not in posts_to_keep_ids:
+                    post.is_deleted = True
+                    post.deleted_at = datetime.now(timezone.utc)
+        
+        await session.commit()
+        logger.info(f"Updated training metadata for channel {username} (channel_id={channel.id}): {len(existing_message_ids)} posts")
+        return True
+        
+    except Exception as e:
+        await session.rollback()
+        logger.error(f"Error updating training metadata for channel {channel.username}: {e}", exc_info=True)
+        return False
+
+
 async def get_posts_for_training(
     session: AsyncSession,
     user_telegram_id: int,
@@ -225,12 +421,51 @@ async def get_posts_for_training(
     """Get recent posts from channels for training.
 
     Strategy:
-    1) Try to get posts by the provided channel usernames.
-    2) If nothing found, fallback to posts from the user's channels.
-    3) If still nothing, fallback to latest posts from any channel.
+    1) For each channel, check if metadata is fresh (less than TTL hours old)
+    2) If metadata is stale or missing, update it via user-bot
+    3) Return only metadata (text=null) from fresh posts
+    4) Fallback to user's channels or any channels if needed
     """
-    # Primary: by explicit channel usernames
-    posts = await _get_posts_by_channel_usernames(session, channel_usernames, limit_per_channel)
+    posts = []
+    metadata_limit = settings.training_posts_per_channel_limit
+    
+    # Process each channel username
+    for username in channel_usernames:
+        username_clean = username.lstrip("@").lower().strip()
+        if not username_clean:
+            continue
+        
+        channel = await ChannelRepository.get_by_username(session, username_clean)
+        if not channel:
+            # Channel doesn't exist in DB, skip for now (could trigger creation, but that's handled elsewhere)
+            continue
+        
+        # Check if metadata is fresh
+        is_fresh = await _check_channel_metadata_freshness(session, channel.id)
+        
+        if not is_fresh:
+            # Metadata is stale or missing, update it
+            logger.info(f"Metadata stale for channel {username_clean}, updating...")
+            await _update_channel_training_metadata(session, channel, metadata_limit)
+        
+        # Get fresh metadata posts (only metadata, text=null)
+        result = await session.execute(
+            select(Post, Channel)
+            .join(Channel)
+            .where(
+                Post.channel_id == channel.id,
+                Post.is_deleted == False,
+                Channel.is_deleted == False
+            )
+            .order_by(Post.posted_at.desc())
+            .limit(limit_per_channel)
+        )
+        
+        for post, ch in result.all():
+            # Text is always None as it's stored in Redis, not DB
+            post_with_channel = _post_to_post_with_channel(post, ch)
+            posts.append(post_with_channel)
+    
     if posts:
         return posts
     
@@ -238,10 +473,13 @@ async def get_posts_for_training(
     limit = limit_per_channel * max(1, len(channel_usernames) or 1)
     posts = await _get_posts_from_user_channels(session, user_telegram_id, limit)
     if posts:
+        # Text is always None as it's stored in Redis, not DB
         return posts
     
     # Ultimate fallback: latest posts from any channels
-    return await _get_latest_posts_from_any_channel(session, limit)
+    fallback_posts = await _get_latest_posts_from_any_channel(session, limit)
+    # Text is always None as it's stored in Redis, not DB
+    return fallback_posts
 
 
 async def get_user_interactions(
@@ -334,7 +572,7 @@ async def _get_candidate_posts_for_user(
         if post.id not in interacted_post_ids:
             candidates.append({
                 'post_id': post.id,
-                'text': post.text or '',
+                'text': '',  # Text stored in Redis, not DB - fetch separately if needed
                 'score': post.relevance_score or 0,
                 'post': post,
                 'channel': channel,
