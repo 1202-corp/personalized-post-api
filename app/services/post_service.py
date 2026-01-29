@@ -416,7 +416,7 @@ async def get_posts_for_training(
     session: AsyncSession,
     user_telegram_id: int,
     channel_usernames: List[str],
-    limit_per_channel: int = 7,
+    limit_per_channel: int = 50,
 ) -> List[PostWithChannel]:
     """Get recent posts from channels for training.
 
@@ -427,6 +427,8 @@ async def get_posts_for_training(
     4) Fallback to user's channels or any channels if needed
     """
     from app.services.post_cache_service import get_post_cache_service
+    
+    logger.info(f"get_posts_for_training: channels={channel_usernames}, limit_per_channel={limit_per_channel}")
     
     posts = []
     metadata_limit = settings.training_posts_per_channel_limit

@@ -407,9 +407,9 @@ class TrainingPostsRequest(BaseModel):
         {
             "user_telegram_id": 123456789,
             "channel_usernames": ["@durov", "@telegram"],
-            "posts_per_channel": 7
+            "posts_per_channel": 50
         }
     """
     user_telegram_id: int = Field(..., description="Telegram user ID", examples=[123456789])
     channel_usernames: List[str] = Field(..., description="List of channel usernames", min_length=1, examples=[["@durov", "@telegram"]])
-    posts_per_channel: int = Field(7, description="Number of posts to fetch per channel", ge=1, le=50, examples=[7])
+    posts_per_channel: int = Field(50, description="Number of posts to fetch per channel (from TRAINING_RECENT_POSTS_PER_CHANNEL)", ge=1, le=100, examples=[50])
