@@ -19,9 +19,9 @@ class UserStatus(str, enum.Enum):
 
 class UserRole(str, enum.Enum):
     """User role in the system."""
-    GUEST = "guest"
-    MEMBER = "member"
-    ADMIN = "admin"
+    guest = "guest"
+    member = "member"
+    admin = "admin"
 
 
 class User(Base):
@@ -42,7 +42,7 @@ class User(Base):
     # User role in the system (guest, member, admin)
     user_role: Mapped[UserRole] = mapped_column(
         Enum(UserRole),
-        default=UserRole.GUEST,
+        default=UserRole.guest,
         nullable=False,
     )
     is_trained: Mapped[bool] = mapped_column(Boolean, default=False)

@@ -102,7 +102,7 @@ async def get_ab_test_results(db: AsyncSession) -> dict:
     for user in all_users:
         variant = get_user_variant(user.telegram_id, AB_TEST_CONFIG["test_name"])
         # Check if user is trained (MEMBER or ADMIN role)
-        is_trained = user.user_role in (UserRole.MEMBER, UserRole.ADMIN)
+        is_trained = user.user_role in (UserRole.member, UserRole.admin)
         variant_users[variant].append((user.id, is_trained, DEFAULT_TRAINING_COUNT))
     
     for variant_name, user_list in variant_users.items():

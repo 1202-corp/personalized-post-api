@@ -164,7 +164,7 @@ async def list_users(
     base_query = select(User).where(User.is_deleted == False)
     if trained_only:
         # Deprecated: use user_role instead. For backward compatibility, filter by MEMBER or ADMIN
-        base_query = base_query.where(User.user_role.in_([UserRole.MEMBER, UserRole.ADMIN]))
+        base_query = base_query.where(User.user_role.in_([UserRole.member, UserRole.admin]))
     if user_role:
         base_query = base_query.where(User.user_role == user_role)
     if q:
@@ -283,7 +283,7 @@ async def update_user(
     if update.user_role is not None:
         update_dict["user_role"] = update.user_role
         # When removing admin role, determine role based on previous role
-        if user.user_role == UserRole.ADMIN and update.user_role != UserRole.ADMIN:
+        if user.user_role == UserRole.admin and update.user_role != UserRole.admin:
             # User was admin, now removing admin role
             # If was MEMBER before becoming admin, restore to MEMBER, otherwise GUEST
             # For simplicity, set to MEMBER if they had training (we can't track previous role easily)
@@ -443,7 +443,7 @@ async def reset_user_training(
         raise HTTPException(status_code=404, detail="User not found")
     
     # Update user status - reset to GUEST role
-    user.user_role = UserRole.GUEST
+    user.user_role = UserRole.guest
     user.initial_best_post_sent = False
     
     # Delete their interactions

@@ -25,7 +25,7 @@ async def get_overview_stats(db: AsyncSession) -> dict:
     # Trained users (MEMBER or ADMIN role)
     trained_users = await db.scalar(
         select(func.count(User.id)).where(
-            User.user_role.in_([UserRole.MEMBER, UserRole.ADMIN]),
+            User.user_role.in_([UserRole.member, UserRole.admin]),
             User.is_deleted == False
         )
     )
@@ -192,7 +192,7 @@ async def get_user_retention(db: AsyncSession, days: int = 7) -> dict:
     # Users who completed training (MEMBER or ADMIN role)
     trained_users = await db.scalar(
         select(func.count(User.id)).where(
-            User.user_role.in_([UserRole.MEMBER, UserRole.ADMIN]),
+            User.user_role.in_([UserRole.member, UserRole.admin]),
             User.is_deleted == False
         )
     )

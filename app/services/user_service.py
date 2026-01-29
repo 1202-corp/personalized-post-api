@@ -164,7 +164,7 @@ class UserService:
         
         # Reset user state so that restored user behaves as NEW/guest
         user.status = UserStatus.NEW
-        user.user_role = UserRole.GUEST
+        user.user_role = UserRole.guest
         user.bonus_channels_count = 0
         user.initial_best_post_sent = False
         user.preference_vector_cache = None
@@ -191,8 +191,8 @@ class UserService:
             if user.status == UserStatus.TRAINING:
                 user.status = UserStatus.TRAINED
                 # Update role to MEMBER when training is completed (if was GUEST)
-                if user.user_role == UserRole.GUEST:
-                    user.user_role = UserRole.MEMBER
+                if user.user_role == UserRole.guest:
+                    user.user_role = UserRole.member
                 await session.commit()
             
             # Notify main-bot via Redis pub/sub

@@ -78,7 +78,7 @@ class UserResponse(UserBase):
     @property
     def is_trained(self) -> bool:
         """Backward compatibility: check if user is trained based on role."""
-        return self.user_role in (UserRole.MEMBER, UserRole.ADMIN)
+        return self.user_role in (UserRole.member, UserRole.admin)
 
 
 class LanguageUpdate(BaseModel):
@@ -110,7 +110,7 @@ class UserFeedTargetResponse(BaseModel):
         """Backward compatibility: check if user is trained based on role."""
         if self.user_role is None:
             return False
-        return self.user_role in (UserRole.MEMBER, UserRole.ADMIN)
+        return self.user_role in (UserRole.member, UserRole.admin)
 
 
 class UserActivityUpdate(BaseModel):
