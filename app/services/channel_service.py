@@ -95,7 +95,7 @@ class ChannelService:
             
             channel = await ChannelRepository.create(session, channel_data)
             await session.commit()
-            await session.refresh(channel)
+            await session.refresh(channel, ["avatar"])
             logger.info(f"channel_created: channel_id={channel.id}, telegram_id={channel.telegram_id}")
             return channel
         except Exception as e:
@@ -112,8 +112,8 @@ class ChannelService:
             
             channel, is_new = await ChannelRepository.get_or_create(session, channel_data)
             await session.commit()
+            await session.refresh(channel, ["avatar"])
             if is_new:
-                await session.refresh(channel)
                 logger.info(f"channel_created: channel_id={channel.id}, telegram_id={channel.telegram_id}")
             return channel, is_new
         except Exception as e:

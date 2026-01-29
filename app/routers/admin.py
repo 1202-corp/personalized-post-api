@@ -177,7 +177,8 @@ async def list_users(
                 pass
         base_query = base_query.where(or_(*filters))
     
-    total_query = select(func.count(User.id)).select_from(base_query.subquery())
+    subq = base_query.subquery()
+    total_query = select(func.count()).select_from(subq)
     total = await db.scalar(total_query)
     
     query = base_query.offset(skip).limit(limit)
