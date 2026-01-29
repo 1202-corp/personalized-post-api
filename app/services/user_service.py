@@ -182,6 +182,8 @@ class UserService:
         
         Returns (user_status, notified).
         """
+        from app.repositories.interaction_repository import InteractionRepository
+        
         try:
             user = await UserRepository.get_by_telegram_id(session, telegram_id)
             if not user:
@@ -195,8 +197,11 @@ class UserService:
                     user.user_role = UserRole.member
                 await session.commit()
             
+            # Get rated_count from DB (actual interactions count)
+            rated_count = await InteractionRepository.count_by_user_id(session, user.id)
+            
             # Notify main-bot via Redis pub/sub
-            notified = await UserService._notify_training_complete(telegram_id)
+            notified = await UserService._notify_training_complete(telegram_id, rated_count)
             
             return user.status, notified
         except NotFoundError:
@@ -207,7 +212,7 @@ class UserService:
             raise
     
     @staticmethod
-    async def _notify_training_complete(telegram_id: int) -> bool:
+    async def _notify_training_complete(telegram_id: int, rated_count: int = 0) -> bool:
         """Notify main-bot via Redis pub/sub about training completion."""
         import json
         import redis.asyncio as aioredis
@@ -224,9 +229,13 @@ class UserService:
             )
             result = await redis_client.publish(
                 "ppp:training_complete",
-                json.dumps({"telegram_id": telegram_id, "chat_id": telegram_id}).encode('utf-8')
+                json.dumps({
+                    "telegram_id": telegram_id,
+                    "chat_id": telegram_id,
+                    "rated_count": rated_count
+                }).encode('utf-8')
             )
-            logger.info(f"training_complete_published: telegram_id={telegram_id}, subscribers={result}")
+            logger.info(f"training_complete_published: telegram_id={telegram_id}, rated_count={rated_count}, subscribers={result}")
             return result > 0
         except Exception as e:
             logger.error(f"redis_notification_failed: telegram_id={telegram_id}, error={str(e)}", exc_info=True)

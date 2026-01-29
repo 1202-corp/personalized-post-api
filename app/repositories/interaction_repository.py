@@ -1,6 +1,6 @@
 """Interaction repository."""
 from typing import List, Optional
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.interaction import Interaction, InteractionType
 from app.models.user import User
@@ -96,4 +96,12 @@ class InteractionRepository:
         await db.delete(interaction)
         await db.flush()
         return True
+    
+    @staticmethod
+    async def count_by_user_id(db: AsyncSession, user_id: int) -> int:
+        """Count interactions for a user."""
+        result = await db.execute(
+            select(func.count(Interaction.id)).where(Interaction.user_id == user_id)
+        )
+        return result.scalar() or 0
 
