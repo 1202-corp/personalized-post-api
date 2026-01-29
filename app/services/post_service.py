@@ -480,7 +480,7 @@ async def get_posts_for_training(
     if posts:
         cache_service = get_post_cache_service()
         post_ids = [p.id for p in posts]
-        cached_contents = await cache_service.get_posts_content_batch(post_ids)
+        cached_contents = await cache_service.get_multiple_posts_content(post_ids)
         
         for post in posts:
             if post.id in cached_contents:
