@@ -155,12 +155,20 @@ class UserService:
         # Remove user-channel links
         user_channels = await UserChannelRepository.get_by_user_id(session, user.id)
         for uc in user_channels:
-            await UserChannelRepository.delete(session, uc.id, hard=True)
+            await UserChannelRepository.delete(session, uc.id)
         
         # Remove interactions
         interactions = await InteractionRepository.get_by_user_id(session, user.id)
         for interaction in interactions:
-            await InteractionRepository.delete(session, interaction.id, hard=True)
+            await InteractionRepository.delete(session, interaction.id)
+        
+        # Reset user state so that restored user behaves as NEW/guest
+        user.status = UserStatus.NEW
+        user.is_trained = False
+        user.bonus_channels_count = 0
+        user.initial_best_post_sent = False
+        user.preference_vector_cache = None
+        user.preference_vector_updated_at = None
         
         # Soft delete user
         return await UserRepository.soft_delete(session, user_id)
