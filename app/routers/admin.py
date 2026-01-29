@@ -245,7 +245,6 @@ async def get_user_details(
         "user_role": user.user_role.value,
         "language": user.language,
         "bonus_channels_count": user.bonus_channels_count,
-        "initial_best_post_sent": user.initial_best_post_sent,
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "last_activity_at": user.last_activity_at.isoformat() if user.last_activity_at else None,
         "channels": [{"id": c.id, "username": c.username, "title": c.title} for c in channels],
@@ -438,8 +437,7 @@ async def reset_user_training(
         raise HTTPException(status_code=404, detail="User not found")
     
     # Update user status - reset to GUEST role
-    user.user_role = UserRole.guest
-    user.initial_best_post_sent = False
+    user.user_role = UserRole.GUEST
     
     # Delete their interactions
     interactions = await InteractionRepository.get_by_user_id(db, user.id)
@@ -475,31 +473,26 @@ async def clear_all_data(
 
 @router.post("/clusters/recalculate")
 async def recalculate_clusters(
-    n_clusters: int = 50,
     db: AsyncSession = Depends(get_session),
     current_admin: dict = Depends(get_current_admin),
 ):
-    """Recalculate post clusters for optimized search.
+    """Recalculate taste clusters (users by preference vector).
     
-    This will group similar posts together based on their embeddings,
-    allowing faster search by filtering through clusters first.
-    
-    Forwards request to ML Service.
+    max_size = ceil(N * 0.017); full recluster. Forwards to ML Service taste-clusters.
     """
     import httpx
     
     try:
         async with httpx.AsyncClient(timeout=300.0) as client:
             response = await client.post(
-                "http://ml-service:8002/api/v1/clusters/recalculate",
-                json={"n_clusters": n_clusters}
+                "http://ml-service:8002/api/v1/taste-clusters/recalculate",
             )
             response.raise_for_status()
             return response.json()
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Error recalculating clusters: {str(e)}"
+            detail=f"Error recalculating taste clusters: {str(e)}"
         )
 
 
@@ -508,19 +501,19 @@ async def get_cluster_stats(
     db: AsyncSession = Depends(get_session),
     current_admin: dict = Depends(get_current_admin),
 ):
-    """Get statistics about current post clusters.
+    """Get statistics about taste clusters (users by preference vector).
     
-    Forwards request to ML Service.
+    Forwards to ML Service taste-clusters/stats.
     """
     import httpx
     
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get("http://ml-service:8002/api/v1/clusters/stats")
+            response = await client.get("http://ml-service:8002/api/v1/taste-clusters/stats")
             response.raise_for_status()
             return response.json()
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Error getting cluster stats: {str(e)}"
+            detail=f"Error getting taste cluster stats: {str(e)}"
         )

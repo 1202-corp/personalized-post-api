@@ -1,7 +1,7 @@
 """remove text column from posts
 
 Revision ID: remove_text_from_posts
-Revises: 
+Revises:
 Create Date: 2026-01-29 18:15:00.000000
 
 """
@@ -9,18 +9,28 @@ from alembic import op
 import sqlalchemy as sa
 
 
-# revision identifiers, used by Alembic.
 revision = 'remove_text_from_posts'
-down_revision = None  # Update this with actual previous revision if needed
+down_revision = None
 branch_labels = None
 depends_on = None
 
 
 def upgrade() -> None:
-    # Remove text column from posts table
-    op.drop_column('posts', 'text')
+    # Удаляем колонку text только если она есть (идемпотентно)
+    conn = op.get_bind()
+    result = conn.execute(sa.text(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND table_name = 'posts' AND column_name = 'text'"
+    ))
+    if result.scalar() is not None:
+        op.drop_column('posts', 'text')
 
 
 def downgrade() -> None:
-    # Add text column back (nullable)
-    op.add_column('posts', sa.Column('text', sa.Text(), nullable=True))
+    conn = op.get_bind()
+    result = conn.execute(sa.text(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND table_name = 'posts' AND column_name = 'text'"
+    ))
+    if result.scalar() is None:
+        op.add_column('posts', sa.Column('text', sa.Text(), nullable=True))

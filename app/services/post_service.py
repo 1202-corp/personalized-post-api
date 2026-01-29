@@ -92,15 +92,15 @@ async def create_post(session: AsyncSession, post_data: PostCreate) -> Optional[
         await session.commit()
         await session.refresh(post)
         
-        # Store text and media in Redis cache if provided
-        # This ensures all users get content from Redis, not by requesting user-bot each time
+        # Store text and media in Redis cache if provided (10 min TTL for new realtime posts)
         if post_data.text or post_data.media_file_id:
             cache_service = get_post_cache_service()
             await cache_service.set_post_content(
                 post_id=post.id,
                 text=post_data.text,
                 media_type=post_data.media_type,
-                media_data=None  # Media data (bytes) should be fetched and cached separately via user-bot if needed
+                media_data=None,
+                ttl_seconds=600,  # 10 min for new posts delivered immediately
             )
             logger.debug(f"Cached post content in Redis (post_id={post.id}, has_text={post_data.text is not None})")
         
@@ -147,8 +147,7 @@ async def bulk_create_posts(session: AsyncSession, bulk_data: PostBulkCreate) ->
         await session.flush()
         await session.commit()
         
-        # Store text and media in Redis cache for each created post
-        # This ensures all users get content from Redis, not by requesting user-bot each time
+        # Store text and media in Redis cache for each created post (10 min TTL for new realtime posts)
         for post, post_data in created_posts:
             await session.refresh(post)
             if post_data.text or post_data.media_file_id:
@@ -156,7 +155,8 @@ async def bulk_create_posts(session: AsyncSession, bulk_data: PostBulkCreate) ->
                     post_id=post.id,
                     text=post_data.text,
                     media_type=post_data.media_type,
-                    media_data=None  # Media data (bytes) should be fetched and cached separately via user-bot if needed
+                    media_data=None,
+                    ttl_seconds=600,  # 10 min for new posts delivered immediately
                 )
                 logger.debug(f"Cached post content in Redis (post_id={post.id}, has_text={post_data.text is not None})")
         
@@ -557,6 +557,8 @@ async def create_interaction(
         logger.info(
             f"interaction_created: interaction_id={interaction.id}, user_id={user.id}, post_id={post.id}"
         )
+        from app.services.ml_client import on_user_interaction as ml_on_user_interaction
+        await ml_on_user_interaction(interaction_data.user_telegram_id)
         return interaction
     except NotFoundError:
         raise
@@ -569,7 +571,8 @@ async def create_interaction(
 async def _get_candidate_posts_for_user(
     session: AsyncSession,
     user: User,
-    fetch_limit: int
+    fetch_limit: int,
+    exclude_post_ids: Optional[List[int]] = None,
 ) -> List[dict]:
     """Get candidate posts for recommendation scoring."""
     user_channels = await UserChannelRepository.get_by_user_id(session, user.id)
@@ -580,6 +583,7 @@ async def _get_candidate_posts_for_user(
     
     interactions = await InteractionRepository.get_by_user_id(session, user.id)
     interacted_post_ids = {i.post_id for i in interactions}
+    excluded = set(exclude_post_ids or [])
     
     query = (
         select(Post, Channel)
@@ -598,7 +602,7 @@ async def _get_candidate_posts_for_user(
     candidates = []
     
     for post, channel in result.all():
-        if post.id not in interacted_post_ids:
+        if post.id not in interacted_post_ids and post.id not in excluded:
             candidates.append({
                 'post_id': post.id,
                 'text': '',  # Text stored in Redis, not DB - fetch separately if needed
@@ -633,7 +637,8 @@ async def _build_post_with_channel_response(
 async def get_best_posts_for_user(
     session: AsyncSession,
     user_telegram_id: int,
-    limit: int = 1
+    limit: int = 1,
+    exclude_post_ids: Optional[List[int]] = None,
 ) -> List[PostWithChannel]:
     """Get best (highest relevance) posts for a user that they haven't interacted with."""
     from app.services import ab_testing_service
@@ -647,7 +652,9 @@ async def get_best_posts_for_user(
     use_llm_reranker = algorithm == RecommendationAlgorithm.LLM_RERANKER
     
     fetch_limit = limit * 5 if use_llm_reranker else limit * 3
-    candidates = await _get_candidate_posts_for_user(session, user, fetch_limit)
+    candidates = await _get_candidate_posts_for_user(
+        session, user, fetch_limit, exclude_post_ids=exclude_post_ids
+    )
     
     if not candidates:
         return []

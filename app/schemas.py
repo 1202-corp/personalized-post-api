@@ -53,10 +53,6 @@ class UserUpdate(BaseModel):
         description="Number of bonus channels available",
         ge=0,
     )
-    initial_best_post_sent: Optional[bool] = Field(
-        None,
-        description="Whether initial best post was sent",
-    )
     user_role: Optional[UserRole] = Field(
         None,
         description="User role (guest, member, admin). guest = not trained, member = trained, admin = admin",
@@ -68,13 +64,12 @@ class UserResponse(UserBase):
     status: UserStatus
     user_role: UserRole
     bonus_channels_count: int
-    initial_best_post_sent: Optional[bool] = False
     language: Optional[str] = "en_US"
     last_activity_at: datetime
     created_at: datetime
     
     model_config = ConfigDict(from_attributes=True)
-    
+
     @property
     def is_trained(self) -> bool:
         """Backward compatibility: check if user is trained based on role."""
@@ -100,17 +95,25 @@ class UserFeedTargetResponse(BaseModel):
     telegram_id: int
     status: UserStatus
     bonus_channels_count: Optional[int] = None
-    initial_best_post_sent: Optional[bool] = None
     user_role: Optional[UserRole] = None
 
     model_config = ConfigDict(from_attributes=True)
-    
+
     @property
     def is_trained(self) -> bool:
         """Backward compatibility: check if user is trained based on role."""
         if self.user_role is None:
             return False
         return self.user_role in (UserRole.member, UserRole.admin)
+
+
+class FeedEligibleResponse(BaseModel):
+    """Whether user is eligible for feed and mailing (has taste cluster, status TRAINED/ACTIVE)."""
+    eligible: bool = Field(..., description="True if user can receive feed and use mailing")
+    reason: Optional[str] = Field(
+        None,
+        description="Reason when not eligible, e.g. 'complete_training'",
+    )
 
 
 class UserActivityUpdate(BaseModel):
@@ -153,21 +156,50 @@ class ChannelUpdate(BaseModel):
         {
             "title": "Updated Channel Title",
             "is_default": true,
-            "is_active": true
+            "avatar_telegram_file_id": "AgACAgIAAxkB..."
         }
     """
     title: Optional[str] = Field(None, description="Channel title", examples=["My Channel"])
     is_default: Optional[bool] = Field(None, description="Whether channel is a default training channel")
-    is_active: Optional[bool] = Field(None, description="Whether channel is active")
+    avatar_telegram_file_id: Optional[str] = Field(None, description="Telegram file_id for channel avatar photo")
 
 
 class ChannelResponse(ChannelBase):
     id: int
     is_default: bool
-    is_active: bool
+    avatar_telegram_file_id: Optional[str] = None
     created_at: datetime
     
     model_config = ConfigDict(from_attributes=True)
+
+
+class UserChannelResponse(BaseModel):
+    """User's channel with mailing_enabled and optional stats."""
+    id: int
+    telegram_id: int
+    username: Optional[str] = None
+    title: str
+    is_default: bool
+    is_bonus: bool
+    mailing_enabled: bool
+    posts_received_count: int = 0
+    avatar_telegram_file_id: Optional[str] = None
+    has_avatar: bool = False
+    description: Optional[str] = None
+
+
+class MailingRecipientsResponse(BaseModel):
+    """List of telegram_id for users who receive mailing for a channel."""
+    telegram_ids: List[int]
+
+
+class MailingToggleRequest(BaseModel):
+    mailing_enabled: bool
+
+
+class ChannelDescriptionUpdate(BaseModel):
+    """Request body for updating channel description (bio/about)."""
+    description: Optional[str] = None
 
 
 class UserChannelAdd(BaseModel):
@@ -177,14 +209,12 @@ class UserChannelAdd(BaseModel):
         {
             "user_telegram_id": 123456789,
             "channel_username": "example_channel",
-            "is_for_training": true,
             "is_bonus": false
         }
     """
     user_telegram_id: int = Field(..., description="Telegram user ID", examples=[123456789])
     channel_username: str = Field(..., description="Channel username (with or without @)", examples=["example_channel", "@example_channel"])
-    is_for_training: bool = Field(False, description="Whether channel is used for training")
-    is_bonus: bool = Field(False, description="Whether channel is a bonus channel")
+    is_bonus: bool = Field(False, description="Whether channel is a bonus channel (user-added, deletable)")
 
 
 # ============== Post Schemas ==============
@@ -340,6 +370,7 @@ class BestPostRequest(BaseModel):
     """
     user_telegram_id: int = Field(..., description="Telegram user ID", examples=[123456789])
     limit: int = Field(1, description="Maximum number of posts to return", ge=1, le=50, examples=[10])
+    exclude_post_ids: Optional[List[int]] = Field(None, description="Post IDs to exclude (e.g. training posts)")
 
 
 class BestPostResponse(BaseModel):
@@ -369,33 +400,6 @@ class JoinChannelResponse(BaseModel):
     channel_username: str
     channel_id: Optional[int] = None
     message: str
-
-
-# ============== Log Schemas ==============
-
-class LogCreate(BaseModel):
-    """Request schema for creating a user activity log entry.
-    
-    Example:
-        {
-            "user_telegram_id": 123456789,
-            "action": "post_like",
-            "details": "post_id=42"
-        }
-    """
-    user_telegram_id: int = Field(..., description="Telegram user ID", examples=[123456789])
-    action: str = Field(..., description="Action name", examples=["post_like", "training_started", "feed_viewed"])
-    details: Optional[str] = Field(None, description="Additional action details", examples=["post_id=42"])
-
-
-class LogResponse(BaseModel):
-    id: int
-    user_id: int
-    action: str
-    details: Optional[str]
-    created_at: datetime
-    
-    model_config = ConfigDict(from_attributes=True)
 
 
 # ============== Training Posts Request ==============

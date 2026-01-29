@@ -12,9 +12,6 @@ from app.models.post import Post
 from app.models.interaction import Interaction
 from app.models.channel import Channel
 from app.models.user_channel import UserChannel
-from app.models.user_log import UserLog
-
-
 async def get_overview_stats(db: AsyncSession) -> dict:
     """Get overall platform statistics."""
     # Total users (excluding deleted)

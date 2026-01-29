@@ -9,9 +9,8 @@ from app.schemas import (
     UserResponse,
     UserUpdate,
     UserActivityUpdate,
-    LogCreate,
-    LogResponse,
     UserFeedTargetResponse,
+    FeedEligibleResponse,
     LanguageUpdate,
     LanguageResponse,
 )
@@ -54,9 +53,8 @@ async def list_users(
             "first_name": "John",
             "last_name": "Doe",
             "status": "TRAINED",
-            "is_trained": true,
+            "user_role": "member",
             "bonus_channels_count": 2,
-            "initial_best_post_sent": true,
             "language": "ru_RU",
             "last_activity_at": "2024-01-01T12:00:00",
             "created_at": "2024-01-01T10:00:00"
@@ -103,7 +101,6 @@ async def create_or_get_user(
         "status": "NEW",
         "user_role": "guest",
         "bonus_channels_count": 0,
-        "initial_best_post_sent": false,
         "language": "ru_RU",
         "last_activity_at": "2024-01-01T12:00:00",
         "created_at": "2024-01-01T12:00:00"
@@ -150,22 +147,6 @@ async def update_activity(
         )
 
 
-@router.post("/logs", response_model=LogResponse, status_code=status.HTTP_201_CREATED)
-async def create_log(
-    log_data: LogCreate,
-    session: AsyncSession = Depends(get_session)
-):
-    """Create a user activity log entry."""
-    try:
-        log = await user_service.create_log(session, log_data)
-        return log
-    except (ValueError, Exception) as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e)
-        )
-
-
 @router.get("/feed-targets", response_model=List[UserFeedTargetResponse])
 async def get_feed_targets(
     session: AsyncSession = Depends(get_session)
@@ -189,7 +170,6 @@ async def get_feed_targets(
             "status": "TRAINED",
             "user_role": "member",
             "bonus_channels_count": 2,
-            "initial_best_post_sent": true
         }
     ]
     ```
@@ -202,6 +182,21 @@ async def get_feed_targets(
 
 
 # ============== Parameterized routes ==============
+
+@router.get("/{telegram_id}/feed-eligible", response_model=FeedEligibleResponse)
+async def get_feed_eligible(
+    telegram_id: int,
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Check if user is eligible for feed and mailing (post-centric delivery).
+
+    Eligible when user has status TRAINED or ACTIVE and has a taste cluster.
+    Used for cold start: block feed/mailing until training is complete and cluster is assigned.
+    """
+    eligible, reason = await user_service.is_feed_eligible(session, telegram_id)
+    return FeedEligibleResponse(eligible=eligible, reason=reason)
+
 
 @router.get("/{telegram_id}", response_model=UserResponse)
 async def get_user(
@@ -232,7 +227,7 @@ async def get_user(
         "status": "TRAINED",
         "user_role": "member",
         "bonus_channels_count": 2,
-        "initial_best_post_sent": true,
+,
         "language": "ru_RU",
         "last_activity_at": "2024-01-01T12:00:00",
         "created_at": "2024-01-01T10:00:00"
@@ -271,7 +266,6 @@ async def update_user(
         "status": "TRAINED",
         "user_role": "member",
         "bonus_channels_count": 2,
-        "initial_best_post_sent": true
     }
     ```
     
@@ -286,7 +280,7 @@ async def update_user(
         "status": "TRAINED",
         "user_role": "member",
         "bonus_channels_count": 2,
-        "initial_best_post_sent": true,
+,
         "language": "ru_RU",
         "last_activity_at": "2024-01-01T12:00:00",
         "created_at": "2024-01-01T10:00:00"

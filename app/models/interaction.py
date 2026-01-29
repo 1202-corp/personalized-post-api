@@ -15,7 +15,7 @@ class InteractionType(str, enum.Enum):
 
 
 class Interaction(Base):
-    """User interaction with post."""
+    """User interaction with post (like/dislike/skip). Used for recommendations and analytics."""
     __tablename__ = "interactions"
     
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)

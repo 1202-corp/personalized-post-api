@@ -13,14 +13,15 @@ migrations run with sync psycopg2 driver.
 from logging.config import fileConfig
 import sys
 
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config, create_engine, pool
 
 from alembic import context
 
-# Import models for autogenerate - all models must be imported
+# Import Base and models for autogenerate - all models must be imported
 from app.database import Base
-from app.models import User, Channel, Post, Interaction, UserLog, UserChannel
 from app.config import get_settings
+# Импортируем модели, чтобы они попали в metadata
+from app.models import User, Channel, Post, Interaction, UserChannel, UserPreferenceVector, TasteCluster  # noqa: F401
 
 # Alembic Config object
 config = context.config
@@ -65,11 +66,8 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    # Используем sync_url напрямую: get_section может не содержать sqlalchemy.url
+    connectable = create_engine(sync_url, poolclass=pool.NullPool)
 
     with connectable.connect() as connection:
         context.configure(

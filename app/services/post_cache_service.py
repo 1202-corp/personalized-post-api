@@ -86,7 +86,8 @@ class PostCacheService:
         post_id: int,
         text: Optional[str] = None,
         media_type: Optional[str] = None,
-        media_data: Optional[bytes] = None
+        media_data: Optional[bytes] = None,
+        ttl_seconds: Optional[int] = None,
     ) -> bool:
         """
         Cache post content (text and media) in Redis.
@@ -96,6 +97,8 @@ class PostCacheService:
             text: HTML text content
             media_type: Type of media (photo, video, etc.)
             media_data: Media data as bytes (will be base64 encoded)
+            ttl_seconds: Optional TTL in seconds. If None, uses CACHE_TTL_SECONDS (6h).
+                         Use 600 for new realtime posts (10 min).
             
         Returns:
             True if successful, False otherwise
@@ -103,6 +106,7 @@ class PostCacheService:
         try:
             redis_client = await self._get_redis_client()
             cache_key = self._get_cache_key(post_id)
+            ttl = ttl_seconds if ttl_seconds is not None else CACHE_TTL_SECONDS
             
             # Prepare hash data
             cache_data = {
@@ -121,7 +125,7 @@ class PostCacheService:
             
             # Store as hash with TTL
             await redis_client.hset(cache_key, mapping=cache_data)
-            await redis_client.expire(cache_key, CACHE_TTL_SECONDS)
+            await redis_client.expire(cache_key, ttl)
             
             logger.debug(f"Cached post content (post_id={post_id}, has_text={text is not None}, has_media={media_data is not None})")
             return True

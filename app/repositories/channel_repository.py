@@ -1,67 +1,80 @@
 """Channel repository."""
 from typing import List, Optional
 from sqlalchemy import select, func
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.channel import Channel
+from app.models.channel_avatar import ChannelAvatar
 from app.schemas import ChannelCreate
+
+
+def _channel_with_avatar(q):
+    """Apply eager load of avatar so Channel.avatar_telegram_file_id / .avatar_photo_bytes work."""
+    return q.options(selectinload(Channel.avatar))
 
 
 class ChannelRepository:
     """Repository for channel operations."""
-    
+
     @staticmethod
     async def get_by_id(db: AsyncSession, channel_id: int) -> Optional[Channel]:
-        """Get channel by ID."""
+        """Get channel by ID (with avatar loaded)."""
         result = await db.execute(
-            select(Channel).where(
-                Channel.id == channel_id,
-                Channel.is_deleted == False
+            _channel_with_avatar(
+                select(Channel).where(
+                    Channel.id == channel_id,
+                    Channel.is_deleted == False
+                )
             )
         )
         return result.scalar_one_or_none()
-    
+
     @staticmethod
     async def get_by_telegram_id(db: AsyncSession, telegram_id: int) -> Optional[Channel]:
-        """Get channel by Telegram ID."""
+        """Get channel by Telegram ID (with avatar loaded)."""
         result = await db.execute(
-            select(Channel).where(
-                Channel.telegram_id == telegram_id,
-                Channel.is_deleted == False
+            _channel_with_avatar(
+                select(Channel).where(
+                    Channel.telegram_id == telegram_id,
+                    Channel.is_deleted == False
+                )
             )
         )
         return result.scalar_one_or_none()
-    
+
     @staticmethod
     async def get_by_username(db: AsyncSession, username: str) -> Optional[Channel]:
-        """Get channel by username."""
-        # Normalize username
+        """Get channel by username (with avatar loaded)."""
         username = username.lstrip("@").lower()
         result = await db.execute(
-            select(Channel).where(
-                Channel.username.ilike(username),
-                Channel.is_deleted == False
+            _channel_with_avatar(
+                select(Channel).where(
+                    Channel.username.ilike(username),
+                    Channel.is_deleted == False
+                )
             )
         )
         return result.scalar_one_or_none()
-    
+
     @staticmethod
     async def get_all(db: AsyncSession) -> List[Channel]:
-        """Get all channels."""
+        """Get all channels (with avatar loaded)."""
         result = await db.execute(
-            select(Channel).where(
-                Channel.is_deleted == False
-            ).order_by(Channel.created_at.desc())
+            _channel_with_avatar(
+                select(Channel).where(Channel.is_deleted == False).order_by(Channel.created_at.desc())
+            )
         )
         return list(result.scalars().all())
-    
+
     @staticmethod
     async def get_default_channels(db: AsyncSession) -> List[Channel]:
-        """Get all default training channels."""
+        """Get all default training channels (with avatar loaded)."""
         result = await db.execute(
-            select(Channel).where(
-                Channel.is_default == True,
-                Channel.is_active == True,
-                Channel.is_deleted == False
+            _channel_with_avatar(
+                select(Channel).where(
+                    Channel.is_default == True,
+                    Channel.is_deleted == False
+                )
             )
         )
         return list(result.scalars().all())
@@ -109,22 +122,46 @@ class ChannelRepository:
         return channel, True
     
     @staticmethod
-    async def update(db: AsyncSession, channel_id: int, **kwargs) -> Optional[Channel]:
-        """Update channel fields (without commit)."""
+    async def get_or_create_avatar(db: AsyncSession, channel_id: int) -> Optional[ChannelAvatar]:
+        """Get or create ChannelAvatar for channel. Returns None if channel does not exist."""
         channel = await ChannelRepository.get_by_id(db, channel_id)
         if not channel:
             return None
-        
+        if channel.avatar:
+            return channel.avatar
+        avatar = ChannelAvatar(channel_id=channel_id)
+        db.add(avatar)
+        await db.flush()
+        return avatar
+
+    @staticmethod
+    async def update(db: AsyncSession, channel_id: int, **kwargs) -> Optional[Channel]:
+        """Update channel fields (without commit). Handles avatar_telegram_file_id via channel_avatars."""
+        avatar_telegram_file_id = kwargs.pop("avatar_telegram_file_id", None)
+        if avatar_telegram_file_id is not None:
+            avatar = await ChannelRepository.get_or_create_avatar(db, channel_id)
+            if avatar and avatar.avatar_telegram_file_id != avatar_telegram_file_id:
+                avatar.avatar_telegram_file_id = avatar_telegram_file_id
+                await db.flush()
+
+        channel = await ChannelRepository.get_by_id(db, channel_id)
+        if not channel:
+            return None
+
         updated = False
         for field, value in kwargs.items():
-            if hasattr(channel, field) and getattr(channel, field) != value:
-                setattr(channel, field, value)
-                updated = True
-        
+            if hasattr(channel, field):
+                try:
+                    current = getattr(channel, field)
+                except Exception:
+                    continue
+                if current != value and not callable(current):
+                    setattr(channel, field, value)
+                    updated = True
+
         if updated:
             await db.flush()
-            return channel
-        return None
+        return channel
     
     @staticmethod
     async def soft_delete(db: AsyncSession, channel_id: int) -> Optional[Channel]:

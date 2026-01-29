@@ -1,8 +1,18 @@
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_session
-from app.schemas import ChannelCreate, ChannelResponse, ChannelUpdate, UserChannelAdd
+from app.schemas import (
+    ChannelCreate,
+    ChannelResponse,
+    ChannelUpdate,
+    UserChannelAdd,
+    UserChannelResponse,
+    MailingRecipientsResponse,
+    MailingToggleRequest,
+    ChannelDescriptionUpdate,
+)
 from app.services import channel_service
 from app.repositories.channel_repository import ChannelRepository
 
@@ -40,7 +50,6 @@ async def list_channels(
             "username": "example_channel",
             "title": "Example Channel",
             "is_default": false,
-            "is_active": true,
             "created_at": "2024-01-01T10:00:00"
         }
     ]
@@ -82,7 +91,6 @@ async def create_or_get_channel(
         "username": "example_channel",
         "title": "Example Channel",
         "is_default": false,
-        "is_active": true,
         "created_at": "2024-01-01T10:00:00"
     }
     ```
@@ -117,7 +125,6 @@ async def get_default_channels(
             "username": "durov",
             "title": "Durov's Channel",
             "is_default": true,
-            "is_active": true,
             "created_at": "2024-01-01T10:00:00"
         }
     ]
@@ -194,7 +201,152 @@ async def get_users_by_channel(
     return users
 
 
+@router.get("/user/{telegram_id}/channels/with-meta", response_model=List[UserChannelResponse])
+async def get_user_channels_with_meta(
+    telegram_id: int,
+    session: AsyncSession = Depends(get_session)
+):
+    """Get user's channels with mailing_enabled and stats (posts_received_count)."""
+    items = await channel_service.get_user_channels_with_meta(session, telegram_id)
+    return items
+
+
+@router.get("/user/{telegram_id}/channels/{channel_id}/detail", response_model=UserChannelResponse)
+async def get_user_channel_detail(
+    telegram_id: int,
+    channel_id: int,
+    session: AsyncSession = Depends(get_session)
+):
+    """Get channel detail for user (stats and mailing_enabled)."""
+    detail = await channel_service.get_user_channel_detail(session, telegram_id, channel_id)
+    if not detail:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Channel not found or user not subscribed"
+        )
+    return detail
+
+
+@router.patch("/user/{telegram_id}/channels/mailing-all", response_model=dict)
+async def patch_user_all_channels_mailing(
+    telegram_id: int,
+    body: MailingToggleRequest,
+    session: AsyncSession = Depends(get_session)
+):
+    """Set mailing_enabled for all user's channels at once."""
+    count = await channel_service.set_user_all_channels_mailing(
+        session, telegram_id, body.mailing_enabled
+    )
+    await session.commit()
+    return {"updated_count": count, "mailing_enabled": body.mailing_enabled}
+
+
+@router.patch("/user/{telegram_id}/channels/{channel_id}", response_model=dict)
+async def patch_user_channel_mailing(
+    telegram_id: int,
+    channel_id: int,
+    body: MailingToggleRequest,
+    session: AsyncSession = Depends(get_session)
+):
+    """Toggle mailing_enabled for user's channel."""
+    uc = await channel_service.set_user_channel_mailing_enabled(
+        session, telegram_id, channel_id, body.mailing_enabled
+    )
+    if not uc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User channel not found"
+        )
+    await session.commit()
+    return {"mailing_enabled": uc.mailing_enabled}
+
+
+@router.delete("/user/{telegram_id}/channels/{channel_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_user_channel(
+    telegram_id: int,
+    channel_id: int,
+    session: AsyncSession = Depends(get_session)
+):
+    """Remove channel from user's subscriptions (unsubscribe)."""
+    removed = await channel_service.remove_user_channel(session, telegram_id, channel_id)
+    if not removed:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User channel not found"
+        )
+    await session.commit()
+
+
 # ============== Parameterized routes ==============
+
+@router.get("/by-telegram-id/{channel_telegram_id}/mailing-recipients", response_model=MailingRecipientsResponse)
+async def get_channel_mailing_recipients_by_telegram_id(
+    channel_telegram_id: int,
+    session: AsyncSession = Depends(get_session)
+):
+    """Get telegram_ids of users who receive mailing for this channel (by Telegram channel id)."""
+    channel = await channel_service.get_channel_by_telegram_id(session, channel_telegram_id)
+    if not channel:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Channel not found"
+        )
+    telegram_ids = await channel_service.get_mailing_recipients(session, channel.id)
+    return MailingRecipientsResponse(telegram_ids=telegram_ids)
+
+
+@router.post("/by-telegram-id/{channel_telegram_id}/avatar", status_code=status.HTTP_204_NO_CONTENT)
+async def set_channel_avatar_by_telegram_id(
+    channel_telegram_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session)
+):
+    """Set channel avatar from raw image bytes (by Telegram channel id). Body = image bytes."""
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty body")
+    updated = await channel_service.set_channel_avatar_bytes(session, channel_telegram_id, body)
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Channel not found")
+    await session.commit()
+
+
+@router.patch("/by-telegram-id/{channel_telegram_id}/description", status_code=status.HTTP_204_NO_CONTENT)
+async def set_channel_description_by_telegram_id(
+    channel_telegram_id: int,
+    body: ChannelDescriptionUpdate,
+    session: AsyncSession = Depends(get_session)
+):
+    """Set channel description (bio/about) by Telegram channel id. Body = { \"description\": \"...\" }."""
+    updated = await channel_service.set_channel_description(
+        session, channel_telegram_id, body.description
+    )
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Channel not found")
+    await session.commit()
+
+
+@router.get("/{channel_id}/mailing-recipients", response_model=MailingRecipientsResponse)
+async def get_channel_mailing_recipients(
+    channel_id: int,
+    session: AsyncSession = Depends(get_session)
+):
+    """Get telegram_ids of users who receive mailing for this channel."""
+    telegram_ids = await channel_service.get_mailing_recipients(session, channel_id)
+    return MailingRecipientsResponse(telegram_ids=telegram_ids)
+
+
+@router.get("/{channel_id}/avatar")
+async def get_channel_avatar(
+    channel_id: int,
+    session: AsyncSession = Depends(get_session)
+):
+    """Get channel avatar image bytes. Returns 404 if no avatar."""
+    avatar_bytes = await channel_service.get_channel_avatar_bytes(session, channel_id)
+    if not avatar_bytes:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Avatar not found")
+    return Response(content=avatar_bytes, media_type="image/jpeg")
+
 
 @router.get("/{channel_id}", response_model=ChannelResponse)
 async def get_channel(

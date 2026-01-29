@@ -240,7 +240,8 @@ async def get_best_posts(
     posts = await post_service.get_best_posts_for_user(
         session,
         request.user_telegram_id,
-        request.limit
+        request.limit,
+        exclude_post_ids=request.exclude_post_ids,
     )
     return BestPostResponse(posts=posts)
 
@@ -326,6 +327,32 @@ async def get_post_content(
         )
     
     return content
+
+
+@router.get("/{post_id}/recipients")
+async def get_post_recipients(
+    post_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Post-centric delivery: return telegram_ids of users who should receive this post.
+    Uses taste clusters and mailing_enabled for the post's channel.
+    """
+    from app.repositories.post_repository import PostRepository
+    from app.services.post_cache_service import get_post_cache_service
+    from app.services.ml_client import get_post_recipients as ml_get_post_recipients
+
+    post = await PostRepository.get_by_id(session, post_id)
+    if not post:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Post not found",
+        )
+    cache_service = get_post_cache_service()
+    content = await cache_service.get_post_content(post_id)
+    text = content.get("text") if isinstance(content, dict) else None
+    telegram_ids = await ml_get_post_recipients(post_id, text=text)
+    return {"telegram_ids": telegram_ids}
 
 
 @router.delete("/{post_id}", status_code=status.HTTP_204_NO_CONTENT)

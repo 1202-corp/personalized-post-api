@@ -141,3 +141,44 @@ async def check_training_eligibility(user_telegram_id: int) -> Tuple[bool, str]:
         default_return={"eligible": False, "message": "ML Service error"}
     )
     return data.get("eligible", False), data.get("message", "")
+
+
+async def on_user_interaction(user_telegram_id: int) -> bool:
+    """
+    Notify ML that user made an interaction; ML may recalc taste after every 2 reactions.
+    Returns True if taste was recalculated.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{ML_SERVICE_URL}/api/v1/ml/on-user-interaction",
+                json={"user_telegram_id": user_telegram_id},
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data.get("recalculated", False)
+    except Exception as e:
+        logger.error(f"ML Service on_user_interaction error: {e}", exc_info=True)
+        return False
+
+
+async def get_post_recipients(post_id: int, text: Optional[str] = None) -> List[int]:
+    """
+    Post-centric delivery: get telegram_ids of users who should receive this post
+    (taste clusters + mailing_enabled for the post's channel).
+    """
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            payload = {"post_id": post_id}
+            if text is not None:
+                payload["text"] = text
+            response = await client.post(
+                f"{ML_SERVICE_URL}/api/v1/ml/post-recipients",
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data.get("telegram_ids", [])
+    except Exception as e:
+        logger.error(f"ML Service get_post_recipients error: {e}", exc_info=True)
+        return []

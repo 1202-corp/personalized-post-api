@@ -3,10 +3,9 @@ from datetime import datetime
 from typing import Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.user import User, UserStatus, UserRole
-from app.models.user_log import UserLog
 from app.repositories.user_repository import UserRepository
-from app.repositories.user_log_repository import UserLogRepository
-from app.schemas import UserCreate, UserUpdate, LogCreate
+from app.repositories.user_preference_vector_repository import UserPreferenceVectorRepository
+from app.schemas import UserCreate, UserUpdate
 from app.exceptions import NotFoundError, ValidationError
 from app.logging_config import get_logger
 
@@ -92,26 +91,25 @@ class UserService:
     ) -> List[User]:
         """Get users whose status is in the provided list."""
         return await UserRepository.get_by_statuses(session, statuses)
-    
+
     @staticmethod
-    async def create_log(session: AsyncSession, log_data: LogCreate) -> UserLog:
-        """Create a user activity log entry."""
-        try:
-            user = await UserRepository.get_by_telegram_id(session, log_data.user_telegram_id)
-            if not user:
-                raise NotFoundError(f"User with telegram_id {log_data.user_telegram_id} not found")
-            
-            log = await UserLogRepository.create(session, log_data, user.id)
-            await session.commit()
-            await session.refresh(log)
-            logger.info(f"log_created: log_id={log.id}, user_id={user.id}, action={log_data.action}")
-            return log
-        except NotFoundError:
-            raise
-        except Exception as e:
-            await session.rollback()
-            logger.error(f"log_creation_failed: {str(e)}", exc_info=True)
-            raise ValidationError(f"Failed to create log: {str(e)}")
+    async def is_feed_eligible(
+        session: AsyncSession,
+        telegram_id: int,
+    ) -> tuple[bool, Optional[str]]:
+        """
+        Check if user is eligible for feed and mailing (post-centric delivery).
+        Eligible = status in (TRAINED, ACTIVE) and taste_cluster_id is not None.
+        Returns (eligible, reason). reason is set when eligible is False (e.g. 'complete_training').
+        """
+        user = await UserRepository.get_by_telegram_id(session, telegram_id)
+        if not user:
+            return False, "user_not_found"
+        if user.status not in (UserStatus.TRAINED, UserStatus.ACTIVE):
+            return False, "complete_training"
+        if user.taste_cluster_id is None:
+            return False, "complete_training"
+        return True, None
     
     @staticmethod
     async def update_user_language(
@@ -166,9 +164,7 @@ class UserService:
         user.status = UserStatus.NEW
         user.user_role = UserRole.guest
         user.bonus_channels_count = 0
-        user.initial_best_post_sent = False
-        user.preference_vector_cache = None
-        user.preference_vector_updated_at = None
+        await UserPreferenceVectorRepository.delete_by_user_id(session, user_id)
         
         # Soft delete user
         return await UserRepository.soft_delete(session, user_id)
@@ -269,11 +265,6 @@ async def update_user(session: AsyncSession, telegram_id: int, user_update: User
 async def update_user_activity(session: AsyncSession, telegram_id: int) -> bool:
     """Update user's last activity timestamp."""
     return await UserService.update_user_activity(session, telegram_id)
-
-
-async def create_log(session: AsyncSession, log_data: LogCreate) -> UserLog:
-    """Create a user activity log entry."""
-    return await UserService.create_log(session, log_data)
 
 
 async def get_users_by_statuses(

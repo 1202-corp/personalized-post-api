@@ -72,7 +72,7 @@ class UserChannelRepository:
             .join(User)
             .where(
                 User.id == user_id,
-                UserChannel.is_for_training == True,
+                UserChannel.is_bonus == False,
                 User.is_deleted == False,
                 Channel.is_deleted == False
             )
@@ -84,7 +84,6 @@ class UserChannelRepository:
         db: AsyncSession,
         user_id: int,
         channel_id: int,
-        is_for_training: bool = False,
         is_bonus: bool = False
     ) -> Optional[UserChannel]:
         """Create a new user-channel association (without commit)."""
@@ -96,7 +95,6 @@ class UserChannelRepository:
         user_channel = UserChannel(
             user_id=user_id,
             channel_id=channel_id,
-            is_for_training=is_for_training,
             is_bonus=is_bonus,
         )
         db.add(user_channel)
@@ -129,3 +127,17 @@ class UserChannelRepository:
         await db.flush()
         return True
 
+    @staticmethod
+    async def update_mailing_enabled(
+        db: AsyncSession,
+        user_id: int,
+        channel_id: int,
+        mailing_enabled: bool
+    ) -> Optional[UserChannel]:
+        """Update mailing_enabled for a user-channel (without commit)."""
+        user_channel = await UserChannelRepository.get_by_user_and_channel(db, user_id, channel_id)
+        if not user_channel:
+            return None
+        user_channel.mailing_enabled = mailing_enabled
+        await db.flush()
+        return user_channel
