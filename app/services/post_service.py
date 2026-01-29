@@ -423,9 +423,11 @@ async def get_posts_for_training(
     Strategy:
     1) For each channel, check if metadata is fresh (less than TTL hours old)
     2) If metadata is stale or missing, update it via user-bot
-    3) Return only metadata (text=null) from fresh posts
+    3) Return posts with text from Redis cache
     4) Fallback to user's channels or any channels if needed
     """
+    from app.services.post_cache_service import get_post_cache_service
+    
     posts = []
     metadata_limit = settings.training_posts_per_channel_limit
     
@@ -448,7 +450,7 @@ async def get_posts_for_training(
             logger.info(f"Metadata stale for channel {username_clean}, updating...")
             await _update_channel_training_metadata(session, channel, metadata_limit)
         
-        # Get fresh metadata posts (only metadata, text=null)
+        # Get fresh metadata posts
         result = await session.execute(
             select(Post, Channel)
             .join(Channel)
@@ -462,24 +464,30 @@ async def get_posts_for_training(
         )
         
         for post, ch in result.all():
-            # Text is always None as it's stored in Redis, not DB
             post_with_channel = _post_to_post_with_channel(post, ch)
             posts.append(post_with_channel)
     
-    if posts:
-        return posts
+    if not posts:
+        # Fallback: posts from user's channels
+        limit = limit_per_channel * max(1, len(channel_usernames) or 1)
+        posts = await _get_posts_from_user_channels(session, user_telegram_id, limit)
+        
+        if not posts:
+            # Ultimate fallback: latest posts from any channels
+            posts = await _get_latest_posts_from_any_channel(session, limit)
     
-    # Fallback: posts from user's channels
-    limit = limit_per_channel * max(1, len(channel_usernames) or 1)
-    posts = await _get_posts_from_user_channels(session, user_telegram_id, limit)
+    # Enrich posts with text from Redis cache
     if posts:
-        # Text is always None as it's stored in Redis, not DB
-        return posts
+        cache_service = get_post_cache_service()
+        post_ids = [p.id for p in posts]
+        cached_contents = await cache_service.get_posts_content_batch(post_ids)
+        
+        for post in posts:
+            if post.id in cached_contents:
+                content = cached_contents[post.id]
+                post.text = content.get("text")
     
-    # Ultimate fallback: latest posts from any channels
-    fallback_posts = await _get_latest_posts_from_any_channel(session, limit)
-    # Text is always None as it's stored in Redis, not DB
-    return fallback_posts
+    return posts
 
 
 async def get_user_interactions(

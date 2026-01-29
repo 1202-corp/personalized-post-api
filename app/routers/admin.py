@@ -9,7 +9,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
-import jwt  # pyjwt
+from jose import jwt, JWTError  # python-jose
 
 from app.database import get_session
 from app.models import User, Channel, Post, Interaction, UserChannel, UserRole
@@ -53,12 +53,7 @@ def verify_token(token: str, token_type: str = "access") -> dict:
                 detail="Invalid token type"
             )
         return payload
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has expired"
-        )
-    except jwt.JWTError:
+    except JWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials"
