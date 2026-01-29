@@ -268,14 +268,32 @@ async def update_post(
     post_update: PostUpdate,
     session: AsyncSession = Depends(get_session)
 ):
-    """Update post fields."""
+    """Update post fields. Text is stored in Redis, not in DB."""
+    from app.services.post_cache_service import get_post_cache_service
+    
     update_data = post_update.model_dump(exclude_unset=True)
+    
+    # Extract text from update_data - it should go to Redis, not DB
+    text_to_cache = update_data.pop('text', None)
+    
+    # Update post fields (excluding text)
     post = await PostRepository.update(session, post_id, **update_data)
     if not post:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Post not found"
         )
+    
+    # Store text in Redis if provided
+    if text_to_cache is not None:
+        cache_service = get_post_cache_service()
+        await cache_service.set_post_content(
+            post_id=post_id,
+            text=text_to_cache,
+            media_type=update_data.get('media_type'),
+            media_data=None  # Media data should be handled separately if needed
+        )
+    
     await session.commit()
     await session.refresh(post)
     return post

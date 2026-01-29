@@ -65,7 +65,9 @@ async def get_post_by_channel_and_message(
 
 
 async def create_post(session: AsyncSession, post_data: PostCreate) -> Optional[Post]:
-    """Create a new post."""
+    """Create a new post. Text and media are stored in Redis, not in DB."""
+    from app.services.post_cache_service import get_post_cache_service
+    
     try:
         channel = await ChannelRepository.get_by_telegram_id(session, post_data.channel_telegram_id)
         if not channel:
@@ -73,10 +75,11 @@ async def create_post(session: AsyncSession, post_data: PostCreate) -> Optional[
         
         normalized_posted_at = _normalize_datetime(post_data.posted_at)
         
+        # Create post with text=None (text is stored in Redis, not DB)
         post = Post(
             channel_id=channel.id,
             telegram_message_id=post_data.telegram_message_id,
-            text=post_data.text,
+            text=None,  # Text stored in Redis, not DB
             media_type=post_data.media_type,
             media_file_id=post_data.media_file_id,
             posted_at=normalized_posted_at,
@@ -85,7 +88,19 @@ async def create_post(session: AsyncSession, post_data: PostCreate) -> Optional[
         await session.flush()
         await session.commit()
         await session.refresh(post)
-        logger.info(f"post_created: post_id={post.id}, channel_id={channel.id}")
+        
+        # Store text and media in Redis cache if provided
+        if post_data.text or post_data.media_file_id:
+            cache_service = get_post_cache_service()
+            # Note: media_data should be fetched separately if needed
+            await cache_service.set_post_content(
+                post_id=post.id,
+                text=post_data.text,
+                media_type=post_data.media_type,
+                media_data=None  # Media data should be fetched and cached separately if needed
+            )
+        
+        logger.info(f"post_created: post_id={post.id}, channel_id={channel.id}, text_in_redis={post_data.text is not None}")
         return post
     except NotFoundError:
         raise
@@ -96,13 +111,17 @@ async def create_post(session: AsyncSession, post_data: PostCreate) -> Optional[
 
 
 async def bulk_create_posts(session: AsyncSession, bulk_data: PostBulkCreate) -> List[Post]:
-    """Bulk create posts for a channel."""
+    """Bulk create posts for a channel. Text and media are stored in Redis, not in DB."""
+    from app.services.post_cache_service import get_post_cache_service
+    
     try:
         channel = await ChannelRepository.get_by_telegram_id(session, bulk_data.channel_telegram_id)
         if not channel:
             raise NotFoundError(f"Channel with telegram_id {bulk_data.channel_telegram_id} not found")
         
         created_posts = []
+        cache_service = get_post_cache_service()
+        
         for post_data in bulk_data.posts:
             existing = await PostRepository.get_by_channel_telegram_id_and_message(
                 session, bulk_data.channel_telegram_id, post_data.telegram_message_id
@@ -110,23 +129,34 @@ async def bulk_create_posts(session: AsyncSession, bulk_data: PostBulkCreate) ->
             if existing:
                 continue
             
+            # Create post with text=None (text is stored in Redis, not DB)
             post = Post(
                 channel_id=channel.id,
                 telegram_message_id=post_data.telegram_message_id,
-                text=post_data.text,
+                text=None,  # Text stored in Redis, not DB
                 media_type=post_data.media_type,
                 media_file_id=post_data.media_file_id,
                 posted_at=_normalize_datetime(post_data.posted_at),
             )
             session.add(post)
-            created_posts.append(post)
+            created_posts.append((post, post_data))  # Store post_data for Redis caching
         
         await session.flush()
         await session.commit()
-        for post in created_posts:
+        
+        # Store text and media in Redis cache for each created post
+        for post, post_data in created_posts:
             await session.refresh(post)
+            if post_data.text or post_data.media_file_id:
+                await cache_service.set_post_content(
+                    post_id=post.id,
+                    text=post_data.text,
+                    media_type=post_data.media_type,
+                    media_data=None  # Media data should be fetched and cached separately if needed
+                )
+        
         logger.info(f"bulk_posts_created: count={len(created_posts)}, channel_id={channel.id}")
-        return created_posts
+        return [post for post, _ in created_posts]
     except NotFoundError:
         raise
     except Exception as e:
