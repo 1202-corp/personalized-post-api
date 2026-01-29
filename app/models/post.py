@@ -14,7 +14,7 @@ class Post(Base):
     channel_id: Mapped[int] = mapped_column(ForeignKey("channels.id", ondelete="CASCADE"), nullable=False)
     telegram_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     
-    text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Note: text and media are stored in Redis cache, not in DB
     media_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     media_file_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     

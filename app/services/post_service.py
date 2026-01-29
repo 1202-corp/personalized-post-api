@@ -32,11 +32,15 @@ def _normalize_datetime(dt: datetime) -> datetime:
 
 
 def _post_to_post_with_channel(post: Post, channel: Channel) -> PostWithChannel:
-    """Convert Post and Channel to PostWithChannel schema."""
+    """Convert Post and Channel to PostWithChannel schema.
+    
+    Note: text field is always None as it's stored in Redis, not DB.
+    Clients should fetch text from Redis cache separately.
+    """
     return PostWithChannel(
         id=post.id,
         telegram_message_id=post.telegram_message_id,
-        text=post.text,
+        text=None,  # Text stored in Redis, not DB - fetch separately via cache API
         media_type=post.media_type,
         media_file_id=post.media_file_id,
         posted_at=post.posted_at,
@@ -75,11 +79,10 @@ async def create_post(session: AsyncSession, post_data: PostCreate) -> Optional[
         
         normalized_posted_at = _normalize_datetime(post_data.posted_at)
         
-        # Create post with text=None (text is stored in Redis, not DB)
+        # Create post (text is stored in Redis, not DB - field removed from model)
         post = Post(
             channel_id=channel.id,
             telegram_message_id=post_data.telegram_message_id,
-            text=None,  # Text stored in Redis, not DB
             media_type=post_data.media_type,
             media_file_id=post_data.media_file_id,
             posted_at=normalized_posted_at,
@@ -90,15 +93,16 @@ async def create_post(session: AsyncSession, post_data: PostCreate) -> Optional[
         await session.refresh(post)
         
         # Store text and media in Redis cache if provided
+        # This ensures all users get content from Redis, not by requesting user-bot each time
         if post_data.text or post_data.media_file_id:
             cache_service = get_post_cache_service()
-            # Note: media_data should be fetched separately if needed
             await cache_service.set_post_content(
                 post_id=post.id,
                 text=post_data.text,
                 media_type=post_data.media_type,
-                media_data=None  # Media data should be fetched and cached separately if needed
+                media_data=None  # Media data (bytes) should be fetched and cached separately via user-bot if needed
             )
+            logger.debug(f"Cached post content in Redis (post_id={post.id}, has_text={post_data.text is not None})")
         
         logger.info(f"post_created: post_id={post.id}, channel_id={channel.id}, text_in_redis={post_data.text is not None}")
         return post
@@ -129,11 +133,10 @@ async def bulk_create_posts(session: AsyncSession, bulk_data: PostBulkCreate) ->
             if existing:
                 continue
             
-            # Create post with text=None (text is stored in Redis, not DB)
+            # Create post (text is stored in Redis, not DB - field removed from model)
             post = Post(
                 channel_id=channel.id,
                 telegram_message_id=post_data.telegram_message_id,
-                text=None,  # Text stored in Redis, not DB
                 media_type=post_data.media_type,
                 media_file_id=post_data.media_file_id,
                 posted_at=_normalize_datetime(post_data.posted_at),
@@ -145,6 +148,7 @@ async def bulk_create_posts(session: AsyncSession, bulk_data: PostBulkCreate) ->
         await session.commit()
         
         # Store text and media in Redis cache for each created post
+        # This ensures all users get content from Redis, not by requesting user-bot each time
         for post, post_data in created_posts:
             await session.refresh(post)
             if post_data.text or post_data.media_file_id:
@@ -152,8 +156,9 @@ async def bulk_create_posts(session: AsyncSession, bulk_data: PostBulkCreate) ->
                     post_id=post.id,
                     text=post_data.text,
                     media_type=post_data.media_type,
-                    media_data=None  # Media data should be fetched and cached separately if needed
+                    media_data=None  # Media data (bytes) should be fetched and cached separately via user-bot if needed
                 )
+                logger.debug(f"Cached post content in Redis (post_id={post.id}, has_text={post_data.text is not None})")
         
         logger.info(f"bulk_posts_created: count={len(created_posts)}, channel_id={channel.id}")
         return [post for post, _ in created_posts]
@@ -352,11 +357,11 @@ async def _update_channel_training_metadata(
                 existing_post.posted_at = datetime.fromisoformat(
                     post_data["posted_at"].replace("Z", "+00:00")
                 ) if post_data.get("posted_at") else datetime.now(timezone.utc)
-                existing_post.text = None  # Ensure text is null for training posts
+                # Note: text field removed from model - stored in Redis only
                 existing_post.updated_at = datetime.now(timezone.utc)
                 existing_message_ids.add(telegram_message_id)
             else:
-                # Create new post with metadata only (text=null)
+                # Create new post with metadata only (text stored in Redis, not DB)
                 posted_at = datetime.fromisoformat(
                     post_data["posted_at"].replace("Z", "+00:00")
                 ) if post_data.get("posted_at") else datetime.now(timezone.utc)
@@ -364,7 +369,7 @@ async def _update_channel_training_metadata(
                 new_post = Post(
                     channel_id=channel.id,
                     telegram_message_id=telegram_message_id,
-                    text=None,  # No text for training posts
+                    # Note: text field removed from model - stored in Redis only
                     media_type=post_data.get("media_type"),
                     media_file_id=post_data.get("media_file_id"),
                     posted_at=posted_at,
@@ -457,10 +462,8 @@ async def get_posts_for_training(
         )
         
         for post, ch in result.all():
-            # Ensure text is null for training posts
+            # Text is always None as it's stored in Redis, not DB
             post_with_channel = _post_to_post_with_channel(post, ch)
-            # Override text to None for training posts
-            post_with_channel.text = None
             posts.append(post_with_channel)
     
     if posts:
@@ -470,16 +473,12 @@ async def get_posts_for_training(
     limit = limit_per_channel * max(1, len(channel_usernames) or 1)
     posts = await _get_posts_from_user_channels(session, user_telegram_id, limit)
     if posts:
-        # Ensure text is null for training posts
-        for post in posts:
-            post.text = None
+        # Text is always None as it's stored in Redis, not DB
         return posts
     
     # Ultimate fallback: latest posts from any channels
     fallback_posts = await _get_latest_posts_from_any_channel(session, limit)
-    # Ensure text is null for training posts
-    for post in fallback_posts:
-        post.text = None
+    # Text is always None as it's stored in Redis, not DB
     return fallback_posts
 
 
@@ -573,7 +572,7 @@ async def _get_candidate_posts_for_user(
         if post.id not in interacted_post_ids:
             candidates.append({
                 'post_id': post.id,
-                'text': post.text or '',
+                'text': '',  # Text stored in Redis, not DB - fetch separately if needed
                 'score': post.relevance_score or 0,
                 'post': post,
                 'channel': channel,

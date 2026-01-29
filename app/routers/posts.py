@@ -299,6 +299,35 @@ async def update_post(
     return post
 
 
+@router.get("/{post_id}/content")
+async def get_post_content(
+    post_id: int,
+    session: AsyncSession = Depends(get_session)
+):
+    """Get post content (text and media) from Redis cache."""
+    from app.services.post_cache_service import get_post_cache_service
+    from app.repositories.post_repository import PostRepository
+    
+    # Verify post exists
+    post = await PostRepository.get_by_id(session, post_id)
+    if not post:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Post not found"
+        )
+    
+    cache_service = get_post_cache_service()
+    content = await cache_service.get_post_content(post_id)
+    
+    if not content:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Post content not found in cache"
+        )
+    
+    return content
+
+
 @router.delete("/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_post(
     post_id: int,
