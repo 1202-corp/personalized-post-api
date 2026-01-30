@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     training_metadata_ttl_hours: int = 6
     training_posts_per_channel_limit: int = 50
     
+    # Training settings (for miniapp and bot)
+    training_recent_posts_per_channel: int = 50
+    training_initial_posts_per_channel: int = 8
+    training_max_extra_from_dislike: int = 5
+    training_max_extra_from_skip: int = 7
+    
     # Admin Dashboard JWT Authentication
     admin_username: str = "superadmin"
     admin_password: str = ""

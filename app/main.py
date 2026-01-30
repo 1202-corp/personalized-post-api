@@ -61,6 +61,17 @@ async def health_check():
     return {"status": "healthy", "service": "api"}
 
 
+@app.get("/api/v1/config/training")
+async def get_training_config():
+    """Get training configuration from .env for miniapp/bot."""
+    return {
+        "posts_per_channel": settings.training_recent_posts_per_channel,
+        "initial_posts_per_channel": settings.training_initial_posts_per_channel,
+        "max_extra_from_dislike": settings.training_max_extra_from_dislike,
+        "max_extra_from_skip": settings.training_max_extra_from_skip,
+    }
+
+
 @app.get("/health/ready")
 async def readiness_check():
     """Readiness check - verifies all dependencies are available."""
