@@ -489,9 +489,18 @@ async def get_posts_for_training(
             .order_by(Post.posted_at.desc())
             .limit(limit_per_channel)
         )
+        channel_post_ids = []
         for post, ch in result.all():
             post_with_channel = _post_to_post_with_channel(post, ch)
             posts.append(post_with_channel)
+            channel_post_ids.append(post.id)
+        logger.info(
+            "[TRAINING_POSTS] channel=%s: limit_per_channel=%s, post_ids(count=%s)=%s",
+            username_clean,
+            limit_per_channel,
+            len(channel_post_ids),
+            channel_post_ids,
+        )
     
     if not posts:
         limit = limit_per_channel * max(1, len(channel_order) or 1)
@@ -499,15 +508,20 @@ async def get_posts_for_training(
         if not posts:
             posts = await _get_latest_posts_from_any_channel(session, limit)
 
+    all_post_ids = [p.id for p in posts]
     if posts:
         cache_service = get_post_cache_service()
-        post_ids = [p.id for p in posts]
-        cached_contents = await cache_service.get_multiple_posts_content(post_ids)
+        cached_contents = await cache_service.get_multiple_posts_content(all_post_ids)
         for post in posts:
             if post.id in cached_contents:
                 content = cached_contents[post.id]
                 post.text = content.get("text")
 
+    logger.info(
+        "[TRAINING_POSTS] returned pool: total=%s, post_ids=%s",
+        len(posts),
+        all_post_ids,
+    )
     # No interleaving: order is already N1 then N2 (posts appended per channel above)
     return posts
 

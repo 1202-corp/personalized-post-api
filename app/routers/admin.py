@@ -497,24 +497,55 @@ async def recalculate_clusters(
         )
 
 
+def _empty_cluster_stats():
+    """Default stats when ML service is unavailable or no clusters."""
+    return {
+        "num_clusters": 0,
+        "total_users": 0,
+        "users_with_taste_cluster": 0,
+        "users_without_taste_cluster": 0,
+        "avg_users_per_cluster": 0.0,
+        "max_users_in_cluster": 0,
+        "cluster_distribution": [],
+    }
+
+
 @router.get("/clusters/stats")
 async def get_cluster_stats(
     db: AsyncSession = Depends(get_session),
     current_admin: dict = Depends(get_current_admin),
 ):
-    """Get statistics about taste clusters (users by preference vector).
+    """Get statistics about taste clusters (per-channel; users by preference vector).
     
-    Forwards to ML Service taste-clusters/stats.
+    Forwards to ML Service taste-clusters/stats and enriches cluster_distribution
+    with channel_title / channel_username for each cluster.
+    Returns empty stats (200) when ML service is unavailable.
     """
     import httpx
-    
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get("http://ml-service:8002/api/v1/taste-clusters/stats")
             response.raise_for_status()
-            return response.json()
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error getting taste cluster stats: {str(e)}"
-        )
+            data = response.json()
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError):
+        return _empty_cluster_stats()
+    except Exception:
+        return _empty_cluster_stats()
+
+    distribution = data.get("cluster_distribution") or []
+    channel_ids = list({item.get("channel_id") for item in distribution if item.get("channel_id") is not None})
+    channel_map = {}
+    if channel_ids:
+        result = await db.execute(select(Channel).where(Channel.id.in_(channel_ids)))
+        for ch in result.scalars().all():
+            channel_map[ch.id] = {"title": ch.title or "", "username": ch.username or ""}
+    for item in distribution:
+        cid = item.get("channel_id")
+        if cid is not None and cid in channel_map:
+            item["channel_title"] = channel_map[cid]["title"]
+            item["channel_username"] = channel_map[cid]["username"]
+        else:
+            item["channel_title"] = None
+            item["channel_username"] = None
+    return data

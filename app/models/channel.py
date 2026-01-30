@@ -51,4 +51,3 @@ class Channel(Base):
     def avatar_photo_bytes(self) -> Optional[bytes]:
         """From channel_avatars table; None if no avatar row."""
         return self.avatar.avatar_photo_bytes if self.avatar else None
-
