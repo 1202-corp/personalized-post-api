@@ -286,6 +286,29 @@ async def _check_channel_metadata_freshness(
     return count > 0
 
 
+async def get_channel_usernames_needing_refresh(
+    session: AsyncSession,
+    channel_usernames: List[str],
+) -> List[str]:
+    """
+    Return channel usernames that need scraping (not in DB or metadata older than TTL).
+    Used by main-bot to skip scrape when posts are already fresh.
+    """
+    need_refresh: List[str] = []
+    for raw in channel_usernames:
+        username_clean = raw.lstrip("@").lower().strip()
+        if not username_clean:
+            continue
+        channel = await ChannelRepository.get_by_username(session, username_clean)
+        if not channel:
+            need_refresh.append(f"@{username_clean}")
+            continue
+        is_fresh = await _check_channel_metadata_freshness(session, channel.id)
+        if not is_fresh:
+            need_refresh.append(f"@{username_clean}")
+    return need_refresh
+
+
 async def _update_channel_training_metadata(
     session: AsyncSession,
     channel: Channel,
@@ -568,70 +591,74 @@ async def create_interaction(
         raise ValidationError(f"Failed to create interaction: {str(e)}")
 
 
+# Max candidates to fetch for scoring (ML predict is per-user, no DB relevance_score)
+_MAX_FEED_CANDIDATES = 200
+
+
 async def _get_candidate_posts_for_user(
     session: AsyncSession,
     user: User,
     fetch_limit: int,
     exclude_post_ids: Optional[List[int]] = None,
 ) -> List[dict]:
-    """Get candidate posts for recommendation scoring."""
+    """Get candidate posts from user's channels (no relevance_score). Scores come from ML predict on the fly."""
     user_channels = await UserChannelRepository.get_by_user_id(session, user.id)
     channel_ids = [uc.channel_id for uc in user_channels]
-    
     if not channel_ids:
         return []
-    
+
     interactions = await InteractionRepository.get_by_user_id(session, user.id)
     interacted_post_ids = {i.post_id for i in interactions}
     excluded = set(exclude_post_ids or [])
-    
+
     query = (
         select(Post, Channel)
         .join(Channel)
         .where(
             Post.channel_id.in_(channel_ids),
-            Post.relevance_score.isnot(None),
             Post.is_deleted == False,
-            Channel.is_deleted == False
+            Channel.is_deleted == False,
         )
-        .order_by(Post.relevance_score.desc())
-        .limit(fetch_limit)
+        .order_by(Post.posted_at.desc())
+        .limit(_MAX_FEED_CANDIDATES)
     )
-    
     result = await session.execute(query)
     candidates = []
-    
     for post, channel in result.all():
         if post.id not in interacted_post_ids and post.id not in excluded:
             candidates.append({
-                'post_id': post.id,
-                'text': '',  # Text stored in Redis, not DB - fetch separately if needed
-                'score': post.relevance_score or 0,
-                'post': post,
-                'channel': channel,
+                "post_id": post.id,
+                "text": "",
+                "score": 0.0,
+                "post": post,
+                "channel": channel,
             })
-    
     return candidates
+
+
+def _post_to_post_with_channel_with_score(post: Post, channel: Channel, score: Optional[float] = None) -> PostWithChannel:
+    """Build PostWithChannel with optional score override (e.g. from ML predict)."""
+    out = _post_to_post_with_channel(post, channel)
+    if score is not None:
+        out = out.model_copy(update={"relevance_score": score})
+    return out
 
 
 async def _build_post_with_channel_response(
     session: AsyncSession,
-    candidate: dict
+    candidate: dict,
+    score_override: Optional[float] = None,
 ) -> Optional[PostWithChannel]:
-    """Build PostWithChannel from candidate dict."""
-    post = candidate.get('post') or await PostRepository.get_by_id(session, candidate['post_id'])
-    channel = candidate.get('channel')
-    
+    """Build PostWithChannel from candidate dict. Use score_override for feed (from ML predict)."""
+    post = candidate.get("post") or await PostRepository.get_by_id(session, candidate["post_id"])
+    channel = candidate.get("channel")
     if not post:
         return None
-    
     if not channel:
         channel = await ChannelRepository.get_by_id(session, post.channel_id)
-    
     if not channel:
         return None
-    
-    return _post_to_post_with_channel(post, channel)
+    return _post_to_post_with_channel_with_score(post, channel, score_override)
 
 
 async def get_best_posts_for_user(
@@ -640,39 +667,45 @@ async def get_best_posts_for_user(
     limit: int = 1,
     exclude_post_ids: Optional[List[int]] = None,
 ) -> List[PostWithChannel]:
-    """Get best (highest relevance) posts for a user that they haven't interacted with."""
+    """Get best posts for a user: candidates from user's channels, scored on the fly via ML predict (no DB relevance_score)."""
     from app.services import ab_testing_service
     from app.services.ab_testing_service import RecommendationAlgorithm
-    
+    from app.services.ml_client import predict as ml_predict
+
     user = await UserRepository.get_by_telegram_id(session, user_telegram_id)
     if not user:
         return []
-    
+
     algorithm = ab_testing_service.get_algorithm_for_user(user_telegram_id)
     use_llm_reranker = algorithm == RecommendationAlgorithm.LLM_RERANKER
-    
     fetch_limit = limit * 5 if use_llm_reranker else limit * 3
+
     candidates = await _get_candidate_posts_for_user(
         session, user, fetch_limit, exclude_post_ids=exclude_post_ids
     )
-    
     if not candidates:
         return []
-    
-    # Apply LLM reranking if enabled
+
+    post_ids = [c["post_id"] for c in candidates]
+    scores = await ml_predict(user_telegram_id, post_ids)
+    for c in candidates:
+        c["score"] = scores.get(c["post_id"], 0.0)
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+    candidates = candidates[:fetch_limit]
+
     if use_llm_reranker:
         from app.services import llm_reranker_service
         candidates = await llm_reranker_service.get_reranked_recommendations(
             session, user_telegram_id, candidates, limit=limit
         )
-    
-    # Build response
+
     posts = []
     for candidate in candidates[:limit]:
-        post_with_channel = await _build_post_with_channel_response(session, candidate)
+        post_with_channel = await _build_post_with_channel_response(
+            session, candidate, score_override=candidate.get("score")
+        )
         if post_with_channel:
             posts.append(post_with_channel)
-    
     return posts
 
 
