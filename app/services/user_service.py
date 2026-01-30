@@ -172,10 +172,13 @@ class UserService:
     @staticmethod
     async def mark_training_complete(
         session: AsyncSession,
-        telegram_id: int
+        telegram_id: int,
+        *,
+        skip_notify: bool = False
     ) -> tuple[UserStatus, bool]:
-        """Mark user training as complete and notify via Redis.
+        """Mark user training as complete; optionally notify main-bot via Redis.
         
+        When skip_notify=True (completion from chat), do not publish Redis.
         Returns (user_status, notified).
         """
         from app.repositories.interaction_repository import InteractionRepository
@@ -196,8 +199,10 @@ class UserService:
             # Get rated_count from DB (actual interactions count)
             rated_count = await InteractionRepository.count_by_user_id(session, user.id)
             
-            # Notify main-bot via Redis pub/sub
-            notified = await UserService._notify_training_complete(telegram_id, rated_count)
+            # Notify main-bot via Redis only when completion was from MiniApp (not from chat)
+            notified = False
+            if not skip_notify:
+                notified = await UserService._notify_training_complete(telegram_id, rated_count)
             
             return user.status, notified
         except NotFoundError:

@@ -121,6 +121,9 @@ async def get_training_posts(
     """
     Get posts metadata for training from specified channels.
     
+    **Allowed only when user status is TRAINING** (MiniApp/chat training in progress).
+    Returns 403 if user is not in training — ensures posts are from the current session only.
+    
     Retrieves recent posts metadata (without text content) from specified channels for user training.
     Falls back to user's subscribed channels if specified channels have no posts.
     
@@ -136,26 +139,16 @@ async def get_training_posts(
         "posts_per_channel": 7
     }
     ```
-    
-    **Example Response:**
-    ```json
-    [
-        {
-            "id": 1,
-            "channel_id": 1,
-            "telegram_message_id": 12345,
-            "text": null,
-            "media_type": "photo",
-            "media_file_id": "123",
-            "posted_at": "2024-01-01T12:00:00",
-            "relevance_score": null,
-            "created_at": "2024-01-01T12:00:00",
-            "channel_username": "durov",
-            "channel_title": "Durov's Channel"
-        }
-    ]
-    ```
     """
+    from app.repositories.user_repository import UserRepository
+    from app.models import UserStatus
+
+    user = await UserRepository.get_by_telegram_id(session, request.user_telegram_id)
+    if not user or user.status != UserStatus.TRAINING:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Training posts are only available when training is in progress. Start training from the bot first.",
+        )
     posts = await post_service.get_posts_for_training(
         session,
         request.user_telegram_id,
@@ -305,27 +298,77 @@ async def get_post_content(
     post_id: int,
     session: AsyncSession = Depends(get_session)
 ):
-    """Get post content (text and media) from Redis cache."""
+    """
+    Get post content (text and media) from Redis cache.
+    If not in cache, fetch from user-bot, store in Redis, then return.
+    """
     from app.services.post_cache_service import get_post_cache_service
     from app.repositories.post_repository import PostRepository
-    
-    # Verify post exists
+    from app.repositories.channel_repository import ChannelRepository
+    from app.config import get_settings
+    import httpx
+
     post = await PostRepository.get_by_id(session, post_id)
     if not post:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Post not found"
         )
-    
+
     cache_service = get_post_cache_service()
     content = await cache_service.get_post_content(post_id)
-    
+
+    if not content:
+        # Fetch from user-bot, then cache and return
+        channel = await ChannelRepository.get_by_id(session, post.channel_id)
+        if not channel or not (channel.username or getattr(channel, "telegram_id", None)):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Post content not found (channel missing)"
+            )
+        channel_username = (channel.username or "").strip() or f"id{channel.telegram_id}"
+        if not channel_username.startswith("@"):
+            channel_username = f"@{channel_username}"
+        from app.config import get_settings
+        settings = get_settings()
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(
+                    f"{settings.user_bot_url.rstrip('/')}/media/full",
+                    params={
+                        "channel_username": channel_username,
+                        "message_id": post.telegram_message_id,
+                    },
+                )
+                if resp.status_code != 200:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Post content not found (fetch failed)"
+                    )
+                data = resp.json()
+                text = data.get("text")
+                media_type = data.get("media_type")
+                await cache_service.set_post_content(
+                    post_id=post_id,
+                    text=text,
+                    media_type=media_type,
+                    media_data=None,
+                )
+                content = await cache_service.get_post_content(post_id)
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Post content not found (fetch failed)"
+            )
+
     if not content:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Post content not found in cache"
         )
-    
+
     return content
 
 
@@ -342,8 +385,13 @@ async def get_post_recipients(
     from app.services.post_cache_service import get_post_cache_service
     from app.services.ml_client import get_post_recipients as ml_get_post_recipients
 
+    from app.logging_config import get_logger
+    logger = get_logger(__name__)
+    
+    logger.info(f"[API_POST_RECIPIENTS] Запрос получателей для post_id={post_id}")
     post = await PostRepository.get_by_id(session, post_id)
     if not post:
+        logger.warning(f"[API_POST_RECIPIENTS] post_id={post_id}: пост не найден")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Post not found",
@@ -351,7 +399,9 @@ async def get_post_recipients(
     cache_service = get_post_cache_service()
     content = await cache_service.get_post_content(post_id)
     text = content.get("text") if isinstance(content, dict) else None
+    logger.info(f"[API_POST_RECIPIENTS] post_id={post_id}: текст из кеша: {text[:100] if text else None!r}")
     telegram_ids = await ml_get_post_recipients(post_id, text=text)
+    logger.info(f"[API_POST_RECIPIENTS] post_id={post_id}: ML service вернул {len(telegram_ids)} получателей")
     return {"telegram_ids": telegram_ids}
 
 

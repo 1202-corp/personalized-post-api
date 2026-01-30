@@ -167,18 +167,22 @@ async def get_post_recipients(post_id: int, text: Optional[str] = None) -> List[
     Post-centric delivery: get telegram_ids of users who should receive this post
     (taste clusters + mailing_enabled for the post's channel).
     """
+    logger.info(f"[ML_CLIENT] Вызываю ML service get_post_recipients: post_id={post_id}, text={text[:100] if text else None!r}")
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             payload = {"post_id": post_id}
             if text is not None:
                 payload["text"] = text
+            logger.info(f"[ML_CLIENT] Отправляю запрос в ML service: {ML_SERVICE_URL}/api/v1/ml/post-recipients, payload keys: {list(payload.keys())}")
             response = await client.post(
                 f"{ML_SERVICE_URL}/api/v1/ml/post-recipients",
                 json=payload,
             )
             response.raise_for_status()
             data = response.json()
-            return data.get("telegram_ids", [])
+            telegram_ids = data.get("telegram_ids", [])
+            logger.info(f"[ML_CLIENT] ML service вернул {len(telegram_ids)} получателей: {telegram_ids[:10]}{'...' if len(telegram_ids) > 10 else ''}")
+            return telegram_ids
     except Exception as e:
-        logger.error(f"ML Service get_post_recipients error: {e}", exc_info=True)
+        logger.error(f"[ML_CLIENT] ML Service get_post_recipients error: {e}", exc_info=True)
         return []

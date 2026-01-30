@@ -202,6 +202,16 @@ class ChannelDescriptionUpdate(BaseModel):
     description: Optional[str] = None
 
 
+class ChannelsNeedRefreshRequest(BaseModel):
+    """Request: which of these channels need scraping (not fresh or missing)."""
+    channel_usernames: List[str] = Field(..., description="Channel usernames (e.g. @chan1, chan2)")
+
+
+class ChannelsNeedRefreshResponse(BaseModel):
+    """Response: channel usernames that need refresh (scrape) within TTL."""
+    channel_usernames: List[str] = Field(default_factory=list, description="Usernames that need scraping")
+
+
 class UserChannelAdd(BaseModel):
     """Request schema for associating a channel with a user.
     

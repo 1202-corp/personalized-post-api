@@ -369,17 +369,19 @@ async def set_user_language(
 @router.post("/{telegram_id}/training-complete", status_code=status.HTTP_200_OK)
 async def mark_training_complete(
     telegram_id: int,
+    skip_notify: bool = False,
     session: AsyncSession = Depends(get_session)
 ):
-    """Mark user training as complete (called from MiniApp).
+    """Mark user training as complete (status TRAINED, role member).
     
-    Always publishes event to Redis so main-bot can send completion message.
+    When skip_notify=True (completion from chat): do not publish Redis — main-bot already sent the message.
+    When skip_notify=False (completion from MiniApp): publish Redis so main-bot sends completion message.
     """
     from app.services.user_service import UserService
     from app.exceptions import NotFoundError
     
     try:
-        user_status, notified = await UserService.mark_training_complete(session, telegram_id)
+        user_status, notified = await UserService.mark_training_complete(session, telegram_id, skip_notify=skip_notify)
         return {"status": "ok", "user_status": user_status.value, "notified": notified}
     except NotFoundError as e:
         raise HTTPException(

@@ -52,7 +52,7 @@ class PostCacheService:
             post_id: Post ID
             
         Returns:
-            Dict with keys: text, media_type, media_data, cached_at
+            Dict with keys: text, media_type, media_data, telegram_file_id, cached_at
             or None if not found/expired
         """
         try:
@@ -69,8 +69,8 @@ class PostCacheService:
             for key, value in data.items():
                 key_str = key.decode('utf-8') if isinstance(key, bytes) else key
                 if key_str == 'media_data' and value:
-                    # media_data is base64 encoded
-                    result[key_str] = base64.b64decode(value).decode('utf-8') if value else None
+                    # media_data is stored as base64 string; return as-is (binary must not be decoded as utf-8)
+                    result[key_str] = value.decode('utf-8') if isinstance(value, bytes) else value
                 elif key_str == 'cached_at':
                     result[key_str] = value.decode('utf-8') if isinstance(value, bytes) else value
                 else:
@@ -87,6 +87,7 @@ class PostCacheService:
         text: Optional[str] = None,
         media_type: Optional[str] = None,
         media_data: Optional[bytes] = None,
+        telegram_file_id: Optional[str] = None,
         ttl_seconds: Optional[int] = None,
     ) -> bool:
         """
@@ -97,6 +98,7 @@ class PostCacheService:
             text: HTML text content
             media_type: Type of media (photo, video, etc.)
             media_data: Media data as bytes (will be base64 encoded)
+            telegram_file_id: Telegram file_id after bot sent this media (avoids re-download)
             ttl_seconds: Optional TTL in seconds. If None, uses CACHE_TTL_SECONDS (6h).
                          Use 600 for new realtime posts (10 min).
             
@@ -108,26 +110,23 @@ class PostCacheService:
             cache_key = self._get_cache_key(post_id)
             ttl = ttl_seconds if ttl_seconds is not None else CACHE_TTL_SECONDS
             
-            # Prepare hash data
-            cache_data = {
-                'cached_at': datetime.utcnow().isoformat(),
-            }
-            
+            cache_data: dict = {}
+            if text is not None or media_type is not None or media_data is not None:
+                cache_data['cached_at'] = datetime.utcnow().isoformat()
             if text is not None:
                 cache_data['text'] = text
-            
             if media_type is not None:
                 cache_data['media_type'] = media_type
-            
             if media_data is not None:
-                # Encode media data as base64
                 cache_data['media_data'] = base64.b64encode(media_data).decode('utf-8')
+            if telegram_file_id is not None:
+                cache_data['telegram_file_id'] = telegram_file_id
             
-            # Store as hash with TTL
-            await redis_client.hset(cache_key, mapping=cache_data)
+            if cache_data:
+                await redis_client.hset(cache_key, mapping=cache_data)
             await redis_client.expire(cache_key, ttl)
             
-            logger.debug(f"Cached post content (post_id={post_id}, has_text={text is not None}, has_media={media_data is not None})")
+            logger.debug(f"Cached post content (post_id={post_id}, has_text={text is not None}, has_media={media_data is not None}, has_file_id={telegram_file_id is not None})")
             return True
         except Exception as e:
             logger.error(f"Error caching post content (post_id={post_id}): {e}")

@@ -12,8 +12,11 @@ from app.schemas import (
     MailingRecipientsResponse,
     MailingToggleRequest,
     ChannelDescriptionUpdate,
+    ChannelsNeedRefreshRequest,
+    ChannelsNeedRefreshResponse,
 )
 from app.services import channel_service
+from app.services import post_service
 from app.repositories.channel_repository import ChannelRepository
 
 router = APIRouter(prefix="/channels", tags=["channels"])
@@ -100,6 +103,19 @@ async def create_or_get_channel(
 
 
 # ============== Specific endpoints (before parameterized routes) ==============
+
+@router.post("/need-refresh", response_model=ChannelsNeedRefreshResponse)
+async def channels_need_refresh(
+    body: ChannelsNeedRefreshRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Return which channel usernames need scraping (not in DB or metadata older than TTL).
+    Main-bot uses this before "Start training" to skip scrape when posts are already fresh.
+    """
+    need = await post_service.get_channel_usernames_needing_refresh(session, body.channel_usernames)
+    return ChannelsNeedRefreshResponse(channel_usernames=need)
+
 
 @router.get("/defaults", response_model=List[ChannelResponse])
 async def get_default_channels(

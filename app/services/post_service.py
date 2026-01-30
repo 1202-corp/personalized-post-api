@@ -188,7 +188,7 @@ async def _get_posts_by_channel_usernames(
 
         result = await session.execute(
             select(Post, Channel)
-            .join(Channel)
+            .join(Channel, Post.channel_id == Channel.id)
             .where(
                 Post.channel_id == channel.id,
                 Post.is_deleted == False,
@@ -197,10 +197,8 @@ async def _get_posts_by_channel_usernames(
             .order_by(Post.posted_at.desc())
             .limit(limit_per_channel)
         )
-
         for post, ch in result.all():
             posts.append(_post_to_post_with_channel(post, ch))
-    
     return posts
 
 
@@ -222,7 +220,7 @@ async def _get_posts_from_user_channels(
     
     result = await session.execute(
         select(Post, Channel)
-        .join(Channel)
+        .join(Channel, Post.channel_id == Channel.id)
         .where(
             Post.channel_id.in_(channel_ids),
             Post.is_deleted == False,
@@ -231,7 +229,6 @@ async def _get_posts_from_user_channels(
         .order_by(Post.posted_at.desc())
         .limit(limit)
     )
-    
     return [_post_to_post_with_channel(post, ch) for post, ch in result.all()]
 
 
@@ -242,7 +239,7 @@ async def _get_latest_posts_from_any_channel(
     """Get latest posts from any channel as fallback."""
     result = await session.execute(
         select(Post, Channel)
-        .join(Channel)
+        .join(Channel, Post.channel_id == Channel.id)
         .where(
             Post.is_deleted == False,
             Channel.is_deleted == False
@@ -452,16 +449,21 @@ async def get_posts_for_training(
     from app.services.post_cache_service import get_post_cache_service
     
     logger.info(f"get_posts_for_training: channels={channel_usernames}, limit_per_channel={limit_per_channel}")
-    
+
+    # Deterministic channel order: N1 queue then N2 queue (no interleaving)
+    seen = set()
+    channel_order: List[str] = []
+    for u in channel_usernames:
+        c = (u or "").strip().lstrip("@").lower()
+        if c and c not in seen:
+            seen.add(c)
+            channel_order.append(c)
+    channel_order.sort()
+
     posts = []
     metadata_limit = settings.training_posts_per_channel_limit
-    
-    # Process each channel username
-    for username in channel_usernames:
-        username_clean = username.lstrip("@").lower().strip()
-        if not username_clean:
-            continue
-        
+
+    for username_clean in channel_order:
         channel = await ChannelRepository.get_by_username(session, username_clean)
         if not channel:
             # Channel doesn't exist in DB, skip for now (could trigger creation, but that's handled elsewhere)
@@ -475,10 +477,10 @@ async def get_posts_for_training(
             logger.info(f"Metadata stale for channel {username_clean}, updating...")
             await _update_channel_training_metadata(session, channel, metadata_limit)
         
-        # Get fresh metadata posts
+        # Get fresh metadata posts — join on Post.channel_id so Channel is always the post's channel
         result = await session.execute(
             select(Post, Channel)
-            .join(Channel)
+            .join(Channel, Post.channel_id == Channel.id)
             .where(
                 Post.channel_id == channel.id,
                 Post.is_deleted == False,
@@ -487,50 +489,26 @@ async def get_posts_for_training(
             .order_by(Post.posted_at.desc())
             .limit(limit_per_channel)
         )
-        
         for post, ch in result.all():
             post_with_channel = _post_to_post_with_channel(post, ch)
             posts.append(post_with_channel)
     
     if not posts:
-        # Fallback: posts from user's channels
-        limit = limit_per_channel * max(1, len(channel_usernames) or 1)
+        limit = limit_per_channel * max(1, len(channel_order) or 1)
         posts = await _get_posts_from_user_channels(session, user_telegram_id, limit)
-        
         if not posts:
-            # Ultimate fallback: latest posts from any channels
             posts = await _get_latest_posts_from_any_channel(session, limit)
-    
-    # Enrich posts with text from Redis cache
+
     if posts:
         cache_service = get_post_cache_service()
         post_ids = [p.id for p in posts]
         cached_contents = await cache_service.get_multiple_posts_content(post_ids)
-        
         for post in posts:
             if post.id in cached_contents:
                 content = cached_contents[post.id]
                 post.text = content.get("text")
-    
-    # Interleave posts from different channels for variety
-    if posts:
-        from itertools import zip_longest
-        posts_by_channel = {}
-        for post in posts:
-            ch_id = post.channel_id
-            if ch_id not in posts_by_channel:
-                posts_by_channel[ch_id] = []
-            posts_by_channel[ch_id].append(post)
-        
-        # Round-robin interleave
-        interleaved = []
-        channel_lists = list(posts_by_channel.values())
-        for items in zip_longest(*channel_lists):
-            for item in items:
-                if item is not None:
-                    interleaved.append(item)
-        posts = interleaved
-    
+
+    # No interleaving: order is already N1 then N2 (posts appended per channel above)
     return posts
 
 
@@ -613,7 +591,7 @@ async def _get_candidate_posts_for_user(
 
     query = (
         select(Post, Channel)
-        .join(Channel)
+        .join(Channel, Post.channel_id == Channel.id)
         .where(
             Post.channel_id.in_(channel_ids),
             Post.is_deleted == False,
