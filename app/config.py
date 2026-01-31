@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     
     # Training settings (for miniapp and bot)
     training_recent_posts_per_channel: int = 50
-    training_initial_posts_per_channel: int = 8
+    training_initial_posts_per_channel: int = 17
     training_max_extra_from_dislike: int = 5
     training_max_extra_from_skip: int = 10
     
