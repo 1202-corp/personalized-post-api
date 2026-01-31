@@ -1,11 +1,13 @@
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.database import init_db, close_db
+from app.database import init_db, close_db, async_session_maker
 from app.config import get_settings
 from app.logging_config import setup_logging, get_logger
-from app.routers import users, channels, posts, ml, analytics, ab_testing, admin
+from app.routers import users, channels, posts, ml, analytics, admin
+from app.services.post_service import cleanup_expired_realtime_posts
 
 # Configure logging
 setup_logging(
@@ -18,12 +20,42 @@ logger = get_logger(__name__)
 settings = get_settings()
 
 
+async def _realtime_post_cleanup_loop():
+    """Background task: periodically soft-delete expired realtime posts (by time, not by event)."""
+    interval = settings.realtime_post_cleanup_interval_seconds
+    while True:
+        try:
+            async with async_session_maker() as session:
+                try:
+                    n = await cleanup_expired_realtime_posts(session)
+                    await session.commit()
+                    if n:
+                        logger.debug(f"realtime_post_cleanup: removed {n} expired posts")
+                except Exception as e:
+                    await session.rollback()
+                    logger.warning(f"realtime_post_cleanup failed: {e}", exc_info=True)
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            logger.info("realtime_post_cleanup_loop stopped")
+            break
+        except Exception as e:
+            logger.warning(f"realtime_post_cleanup_loop error: {e}", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan events."""
     # Startup
     await init_db()
-    yield
+    cleanup_task = asyncio.create_task(_realtime_post_cleanup_loop())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
     # Shutdown
     await close_db()
 
@@ -38,7 +70,13 @@ app = FastAPI(
 # CORS middleware for MiniApp and Admin Dashboard
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:10304", "http://localhost:3000", "http://localhost:5173", "http://localhost:10303"],  # Admin dashboard, miniapp and dev servers
+    allow_origins=[
+        "http://localhost:10304",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:10303",
+        "http://huawei-andrey"
+    ],  # Admin dashboard, miniapp, dev servers, huawei-andrey
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -51,7 +89,6 @@ app.include_router(channels.router, prefix="/api/v1")
 app.include_router(posts.router, prefix="/api/v1")
 app.include_router(ml.router, prefix="/api/v1")
 app.include_router(analytics.router, prefix="/api/v1")
-app.include_router(ab_testing.router, prefix="/api/v1")
 app.include_router(admin.router, prefix="/api/v1")
 
 

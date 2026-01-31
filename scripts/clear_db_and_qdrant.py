@@ -12,14 +12,13 @@ from pathlib import Path
 if __name__ == "__main__" and str(Path(__file__).resolve().parent.parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqlalchemy import delete
+from sqlalchemy import delete, text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
 from app.config import get_settings
 from app.models.interaction import Interaction
-from app.models.user_preference_vector import UserPreferenceVector
 from app.models.taste_cluster import TasteCluster
 from app.models.user import User
 from app.models.channel import Channel
@@ -38,10 +37,12 @@ async def clear_database():
         print("Очистка БД (все таблицы)...")
         await session.execute(delete(Interaction))
         print("  ✓ Interactions удалены")
-        await session.execute(delete(UserPreferenceVector))
-        print("  ✓ User preference vectors удалены")
         await session.execute(delete(UserChannel))
         print("  ✓ User channels удалены")
+        await session.execute(text("DELETE FROM user_channel_preference_vectors"))
+        print("  ✓ User channel preference vectors удалены")
+        await session.execute(text("DELETE FROM user_channel_tastes"))
+        print("  ✓ User channel tastes удалены")
         await session.execute(delete(Post))
         print("  ✓ Posts удалены")
         await session.execute(delete(ChannelAvatar))

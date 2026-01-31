@@ -1,13 +1,13 @@
-"""Taste cluster ORM model — clusters of users by preference vector for post-centric delivery."""
+"""Taste cluster ORM model — clusters of users by preference vector per channel (user_channel_tastes)."""
 from datetime import datetime
 from typing import Optional, List
-from sqlalchemy import Integer, JSON, DateTime, Index
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import Integer, JSON, DateTime
+from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base
 
 
 class TasteCluster(Base):
-    """Cluster of users with similar taste (preference vector). Used to decide who receives a new post."""
+    """Cluster of users with similar taste for one channel. Used with user_channel_tastes for delivery."""
     __tablename__ = "taste_clusters"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -17,9 +17,4 @@ class TasteCluster(Base):
         DateTime(timezone=True),
         default=datetime.utcnow,
         onupdate=datetime.utcnow,
-    )
-
-    # Relationships
-    users: Mapped[List["User"]] = relationship(
-        back_populates="taste_cluster",
     )

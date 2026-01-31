@@ -4,7 +4,6 @@ from typing import Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.user import User, UserStatus, UserRole
 from app.repositories.user_repository import UserRepository
-from app.repositories.user_preference_vector_repository import UserPreferenceVectorRepository
 from app.schemas import UserCreate, UserUpdate
 from app.exceptions import NotFoundError, ValidationError
 from app.logging_config import get_logger
@@ -99,15 +98,13 @@ class UserService:
     ) -> tuple[bool, Optional[str]]:
         """
         Check if user is eligible for feed and mailing (post-centric delivery).
-        Eligible = status in (TRAINED, ACTIVE) and taste_cluster_id is not None.
+        Eligible = status in (TRAINED, ACTIVE). Per-channel clusters are used for delivery.
         Returns (eligible, reason). reason is set when eligible is False (e.g. 'complete_training').
         """
         user = await UserRepository.get_by_telegram_id(session, telegram_id)
         if not user:
             return False, "user_not_found"
         if user.status not in (UserStatus.TRAINED, UserStatus.ACTIVE):
-            return False, "complete_training"
-        if user.taste_cluster_id is None:
             return False, "complete_training"
         return True, None
     
@@ -141,31 +138,35 @@ class UserService:
         """Delete a user (soft or hard) and cleanup related data for soft delete."""
         from app.repositories.user_channel_repository import UserChannelRepository
         from app.repositories.interaction_repository import InteractionRepository
-        
+        from sqlalchemy import text
+
         if hard:
             # Hard delete user only (DB cascade rules may apply)
             return await UserRepository.delete(session, user_id, hard=True)
-        
+
         user = await UserRepository.get_by_id(session, user_id)
         if not user or user.is_deleted:
             return None
-        
+
         # Remove user-channel links
         user_channels = await UserChannelRepository.get_by_user_id(session, user.id)
         for uc in user_channels:
             await UserChannelRepository.delete(session, uc.id)
-        
+
         # Remove interactions
         interactions = await InteractionRepository.get_by_user_id(session, user.id)
         for interaction in interactions:
             await InteractionRepository.delete(session, interaction.id)
-        
+
+        # Remove per-channel preference vectors and taste assignments (no ORM in API)
+        await session.execute(text("DELETE FROM user_channel_preference_vectors WHERE user_id = :uid"), {"uid": user_id})
+        await session.execute(text("DELETE FROM user_channel_tastes WHERE user_id = :uid"), {"uid": user_id})
+
         # Reset user state so that restored user behaves as NEW/guest
         user.status = UserStatus.NEW
         user.user_role = UserRole.guest
         user.bonus_channels_count = 0
-        await UserPreferenceVectorRepository.delete_by_user_id(session, user_id)
-        
+
         # Soft delete user
         return await UserRepository.soft_delete(session, user_id)
     

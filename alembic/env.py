@@ -21,7 +21,7 @@ from alembic import context
 from app.database import Base
 from app.config import get_settings
 # Импортируем модели, чтобы они попали в metadata
-from app.models import User, Channel, Post, Interaction, UserChannel, UserPreferenceVector, TasteCluster  # noqa: F401
+from app.models import User, Channel, Post, Interaction, UserChannel, TasteCluster  # noqa: F401
 
 # Alembic Config object
 config = context.config

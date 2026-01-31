@@ -31,13 +31,17 @@ class Settings(BaseSettings):
     # Default training channels
     default_training_channels: str = "@durov,@telegram"
     
-    # Training metadata settings
+    # Training metadata settings (posts downloaded during training: DB metadata + Redis content 6h)
     training_metadata_ttl_hours: int = 6
     training_posts_per_channel_limit: int = 50
+    # Realtime posts (new post for publishing): DB + Redis 10 min
+    realtime_post_ttl_minutes: int = 10
+    # How often to run cleanup of expired realtime posts (seconds); posts are deleted by time, not by event
+    realtime_post_cleanup_interval_seconds: int = 60
     
     # Training settings (for miniapp and bot)
     training_recent_posts_per_channel: int = 50
-    training_initial_posts_per_channel: int = 8
+    training_initial_posts_per_channel: int = 17
     training_max_extra_from_dislike: int = 5
     training_max_extra_from_skip: int = 7
     

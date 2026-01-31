@@ -57,6 +57,25 @@ async def get_post_by_id(session: AsyncSession, post_id: int) -> Optional[Post]:
     return await PostRepository.get_by_id(session, post_id)
 
 
+async def invalidate_post_message_gone(session: AsyncSession, post_id: int) -> bool:
+    """
+    Mark post as invalid because the Telegram message no longer exists (deleted in channel).
+    Clears Redis cache and soft-deletes the post in DB.
+    Returns True if post was invalidated, False if post not found or already deleted.
+    """
+    from app.services.post_cache_service import get_post_cache_service
+
+    post = await PostRepository.get_by_id(session, post_id)
+    if not post or post.is_deleted:
+        return False
+    cache_service = get_post_cache_service()
+    await cache_service.invalidate_post_cache(post_id)
+    await PostRepository.soft_delete(session, post_id)
+    await session.commit()
+    logger.info(f"post_message_gone_invalidated: post_id={post_id} (Redis cleared, soft-deleted)")
+    return True
+
+
 async def get_post_by_channel_and_message(
     session: AsyncSession,
     channel_telegram_id: int,
@@ -68,24 +87,55 @@ async def get_post_by_channel_and_message(
     )
 
 
+async def cleanup_expired_realtime_posts(session: AsyncSession) -> int:
+    """
+    Soft-delete realtime posts that have expired (expires_at < now).
+    Also invalidate their Redis cache. Returns number of posts cleaned.
+    """
+    from app.services.post_cache_service import get_post_cache_service
+    now = datetime.now(timezone.utc)
+    result = await session.execute(
+        select(Post.id).where(
+            Post.expires_at.isnot(None),
+            Post.expires_at < now,
+            Post.is_deleted == False,
+        )
+    )
+    post_ids = [row[0] for row in result.all()]
+    if not post_ids:
+        return 0
+    cache_service = get_post_cache_service()
+    for post_id in post_ids:
+        await cache_service.invalidate_post_cache(post_id)
+        await PostRepository.soft_delete(session, post_id)
+    await session.flush()
+    logger.info(f"cleanup_expired_realtime_posts: cleaned {len(post_ids)} posts (expires_at < now)")
+    return len(post_ids)
+
+
 async def create_post(session: AsyncSession, post_data: PostCreate) -> Optional[Post]:
-    """Create a new post. Text and media are stored in Redis, not in DB."""
+    """Create a new post (realtime: DB + Redis 10 min TTL). Text and media are stored in Redis, not in DB."""
     from app.services.post_cache_service import get_post_cache_service
     
     try:
+        await cleanup_expired_realtime_posts(session)
+        await session.commit()
+        # Re-open transaction for create
         channel = await ChannelRepository.get_by_telegram_id(session, post_data.channel_telegram_id)
         if not channel:
             raise NotFoundError(f"Channel with telegram_id {post_data.channel_telegram_id} not found")
         
         normalized_posted_at = _normalize_datetime(post_data.posted_at)
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.realtime_post_ttl_minutes)
         
-        # Create post (text is stored in Redis, not DB - field removed from model)
+        # Create post (realtime: expires_at = 10 min; Redis content 10 min set below)
         post = Post(
             channel_id=channel.id,
             telegram_message_id=post_data.telegram_message_id,
             media_type=post_data.media_type,
             media_file_id=post_data.media_file_id,
             posted_at=normalized_posted_at,
+            expires_at=expires_at,
         )
         session.add(post)
         await session.flush()
@@ -100,7 +150,7 @@ async def create_post(session: AsyncSession, post_data: PostCreate) -> Optional[
                 text=post_data.text,
                 media_type=post_data.media_type,
                 media_data=None,
-                ttl_seconds=600,  # 10 min for new posts delivered immediately
+                ttl_seconds=settings.realtime_post_ttl_minutes * 60,  # realtime: 10 min
             )
             logger.debug(f"Cached post content in Redis (post_id={post.id}, has_text={post_data.text is not None})")
         
@@ -115,39 +165,48 @@ async def create_post(session: AsyncSession, post_data: PostCreate) -> Optional[
 
 
 async def bulk_create_posts(session: AsyncSession, bulk_data: PostBulkCreate) -> List[Post]:
-    """Bulk create posts for a channel. Text and media are stored in Redis, not in DB."""
+    """Bulk create/update posts. If for_training=True: training metadata (no TTL, update-or-create). Else: realtime (10 min TTL)."""
     from app.services.post_cache_service import get_post_cache_service
-    
+
+    channel = await ChannelRepository.get_by_telegram_id(session, bulk_data.channel_telegram_id)
+    if not channel:
+        raise NotFoundError(f"Channel with telegram_id {bulk_data.channel_telegram_id} not found")
+
+    if getattr(bulk_data, "for_training", False):
+        return await _bulk_upsert_training_posts(session, channel, bulk_data)
+
     try:
-        channel = await ChannelRepository.get_by_telegram_id(session, bulk_data.channel_telegram_id)
-        if not channel:
-            raise NotFoundError(f"Channel with telegram_id {bulk_data.channel_telegram_id} not found")
-        
+        await cleanup_expired_realtime_posts(session)
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    try:
         created_posts = []
         cache_service = get_post_cache_service()
-        
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.realtime_post_ttl_minutes)
+
         for post_data in bulk_data.posts:
             existing = await PostRepository.get_by_channel_telegram_id_and_message(
                 session, bulk_data.channel_telegram_id, post_data.telegram_message_id
             )
             if existing:
                 continue
-            
-            # Create post (text is stored in Redis, not DB - field removed from model)
+
             post = Post(
                 channel_id=channel.id,
                 telegram_message_id=post_data.telegram_message_id,
                 media_type=post_data.media_type,
                 media_file_id=post_data.media_file_id,
                 posted_at=_normalize_datetime(post_data.posted_at),
+                expires_at=expires_at,
             )
             session.add(post)
-            created_posts.append((post, post_data))  # Store post_data for Redis caching
-        
+            created_posts.append((post, post_data))
+
         await session.flush()
         await session.commit()
-        
-        # Store text and media in Redis cache for each created post (10 min TTL for new realtime posts)
+
         for post, post_data in created_posts:
             await session.refresh(post)
             if post_data.text or post_data.media_file_id:
@@ -156,10 +215,10 @@ async def bulk_create_posts(session: AsyncSession, bulk_data: PostBulkCreate) ->
                     text=post_data.text,
                     media_type=post_data.media_type,
                     media_data=None,
-                    ttl_seconds=600,  # 10 min for new posts delivered immediately
+                    ttl_seconds=settings.realtime_post_ttl_minutes * 60,
                 )
                 logger.debug(f"Cached post content in Redis (post_id={post.id}, has_text={post_data.text is not None})")
-        
+
         logger.info(f"bulk_posts_created: count={len(created_posts)}, channel_id={channel.id}")
         return [post for post, _ in created_posts]
     except NotFoundError:
@@ -168,6 +227,81 @@ async def bulk_create_posts(session: AsyncSession, bulk_data: PostBulkCreate) ->
         await session.rollback()
         logger.error(f"bulk_posts_creation_failed: {str(e)}", exc_info=True)
         raise ValidationError(f"Failed to bulk create posts: {str(e)}")
+
+
+async def _bulk_upsert_training_posts(
+    session: AsyncSession, channel: Channel, bulk_data: PostBulkCreate
+) -> List[Post]:
+    """Create/update training metadata posts (no expires_at). Refreshes channel TTL in admin."""
+    from app.services.post_cache_service import get_post_cache_service
+
+    cache_service = get_post_cache_service()
+    limit = settings.training_posts_per_channel_limit
+    updated_or_created_ids = set()
+
+    try:
+        for post_data in bulk_data.posts:
+            existing = await PostRepository.get_by_channel_and_message(
+                session, channel.id, post_data.telegram_message_id
+            )
+            posted_at = _normalize_datetime(post_data.posted_at)
+            if existing:
+                existing.media_type = post_data.media_type
+                existing.media_file_id = post_data.media_file_id
+                existing.posted_at = posted_at
+                existing.updated_at = datetime.now(timezone.utc)
+                updated_or_created_ids.add(post_data.telegram_message_id)
+            else:
+                new_post = Post(
+                    channel_id=channel.id,
+                    telegram_message_id=post_data.telegram_message_id,
+                    media_type=post_data.media_type,
+                    media_file_id=post_data.media_file_id,
+                    posted_at=posted_at,
+                    # no expires_at = training metadata
+                )
+                session.add(new_post)
+                updated_or_created_ids.add(post_data.telegram_message_id)
+
+        await session.flush()
+
+        all_posts_result = await session.execute(
+            select(Post)
+            .where(Post.channel_id == channel.id, Post.is_deleted == False)
+            .order_by(Post.posted_at.desc())
+        )
+        all_posts = list(all_posts_result.scalars().all())
+        if len(all_posts) > limit:
+            posts_to_keep = all_posts[:limit]
+            keep_ids = {p.id for p in posts_to_keep}
+            for post in all_posts:
+                if post.id not in keep_ids:
+                    post.is_deleted = True
+                    post.deleted_at = datetime.now(timezone.utc)
+
+        await session.commit()
+
+        for post_data in bulk_data.posts:
+            post = await PostRepository.get_by_channel_and_message(
+                session, channel.id, post_data.telegram_message_id
+            )
+            if post and (post_data.text or post_data.media_file_id):
+                await cache_service.set_post_content(
+                    post_id=post.id,
+                    text=post_data.text,
+                    media_type=post_data.media_type,
+                    media_data=None,
+                    ttl_seconds=settings.training_metadata_ttl_hours * 3600,
+                )
+        logger.info(f"bulk_training_posts_upserted: channel_id={channel.id}, count={len(updated_or_created_ids)}")
+        all_posts_result2 = await session.execute(
+            select(Post).where(Post.channel_id == channel.id, Post.is_deleted == False).order_by(Post.posted_at.desc())
+        )
+        return list(all_posts_result2.scalars().all())
+    except Exception as e:
+        await session.rollback()
+        logger.error(f"bulk_training_posts_upsert_failed: {str(e)}", exc_info=True)
+        raise ValidationError(f"Failed to bulk upsert training posts: {str(e)}")
 
 
 async def _get_posts_by_channel_usernames(
@@ -659,37 +793,42 @@ async def get_best_posts_for_user(
     limit: int = 1,
     exclude_post_ids: Optional[List[int]] = None,
 ) -> List[PostWithChannel]:
-    """Get best posts for a user: candidates from user's channels, scored on the fly via ML predict (no DB relevance_score)."""
-    from app.services import ab_testing_service
-    from app.services.ab_testing_service import RecommendationAlgorithm
+    """Get best posts for a user: candidates from user's channels, scored on the fly via ML predict (cosine similarity)."""
     from app.services.ml_client import predict as ml_predict
 
     user = await UserRepository.get_by_telegram_id(session, user_telegram_id)
     if not user:
         return []
 
-    algorithm = ab_testing_service.get_algorithm_for_user(user_telegram_id)
-    use_llm_reranker = algorithm == RecommendationAlgorithm.LLM_RERANKER
-    fetch_limit = limit * 5 if use_llm_reranker else limit * 3
+    user_channels = await UserChannelRepository.get_by_user_id(session, user.id)
+    channel_ids = [uc.channel_id for uc in user_channels]
+    fetch_limit = limit * 3
 
     candidates = await _get_candidate_posts_for_user(
         session, user, fetch_limit, exclude_post_ids=exclude_post_ids
     )
     if not candidates:
+        logger.info(
+            f"get_best_posts: no candidates user_telegram_id={user_telegram_id} channel_ids={channel_ids} channel_count={len(channel_ids)}"
+        )
         return []
 
     post_ids = [c["post_id"] for c in candidates]
     scores = await ml_predict(user_telegram_id, post_ids)
     for c in candidates:
         c["score"] = scores.get(c["post_id"], 0.0)
+    score_list = [c["score"] for c in candidates]
+    threshold = 0.3
+    count_above = sum(1 for s in score_list if s >= threshold)
+    score_min = min(score_list) if score_list else None
+    score_max = max(score_list) if score_list else None
+    score_mean = round(sum(score_list) / len(score_list), 4) if score_list else None
+    logger.info(
+        f"get_best_posts: user_telegram_id={user_telegram_id} candidates={len(candidates)} "
+        f"score_min={score_min} score_max={score_max} score_mean={score_mean} count_above_{threshold}={count_above}"
+    )
     candidates.sort(key=lambda x: x["score"], reverse=True)
     candidates = candidates[:fetch_limit]
-
-    if use_llm_reranker:
-        from app.services import llm_reranker_service
-        candidates = await llm_reranker_service.get_reranked_recommendations(
-            session, user_telegram_id, candidates, limit=limit
-        )
 
     posts = []
     for candidate in candidates[:limit]:

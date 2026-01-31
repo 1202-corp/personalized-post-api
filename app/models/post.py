@@ -32,6 +32,8 @@ class Post(Base):
     # Soft delete fields
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Realtime posts: expire and get soft-deleted after TTL (e.g. 10 min). NULL = training post (6h metadata staleness only).
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     
     # Relationships
     channel: Mapped["Channel"] = relationship(back_populates="posts")

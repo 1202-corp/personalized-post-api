@@ -275,6 +275,7 @@ class PostBulkCreate(BaseModel):
     """
     channel_telegram_id: int = Field(..., description="Telegram channel ID", examples=[-1001234567890])
     posts: List[PostBase] = Field(..., description="List of posts to create", min_length=1)
+    for_training: bool = Field(False, description="If True, create/update training metadata (no TTL); if False, create realtime posts (10 min TTL)")
 
 
 class PostUpdate(BaseModel):

@@ -5,7 +5,6 @@ from app.models.channel import Channel
 from app.models.post import Post
 from app.models.interaction import Interaction, InteractionType
 from app.models.user_channel import UserChannel
-from app.models.user_preference_vector import UserPreferenceVector
 from app.models.channel_avatar import ChannelAvatar
 from app.models.taste_cluster import TasteCluster
 
@@ -18,7 +17,6 @@ __all__ = [
     "Interaction",
     "InteractionType",
     "UserChannel",
-    "UserPreferenceVector",
     "ChannelAvatar",
     "TasteCluster",
 ]

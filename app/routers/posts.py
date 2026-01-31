@@ -330,6 +330,7 @@ async def get_post_content(
         if not channel_username.startswith("@"):
             channel_username = f"@{channel_username}"
         from app.config import get_settings
+        from app.services.post_service import invalidate_post_message_gone
         settings = get_settings()
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -341,9 +342,11 @@ async def get_post_content(
                     },
                 )
                 if resp.status_code != 200:
+                    # Message no longer exists in Telegram — invalidate post and take another
+                    await invalidate_post_message_gone(session, post_id)
                     raise HTTPException(
                         status_code=status.HTTP_404_NOT_FOUND,
-                        detail="Post content not found (fetch failed)"
+                        detail="Post content not found (message gone)"
                     )
                 data = resp.json()
                 text = data.get("text")
@@ -358,6 +361,7 @@ async def get_post_content(
         except HTTPException:
             raise
         except Exception:
+            # Do not invalidate on generic errors (e.g. timeout); only invalidate when user-bot returns non-200
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Post content not found (fetch failed)"
@@ -403,6 +407,24 @@ async def get_post_recipients(
     telegram_ids = await ml_get_post_recipients(post_id, text=text)
     logger.info(f"[API_POST_RECIPIENTS] post_id={post_id}: ML service вернул {len(telegram_ids)} получателей")
     return {"telegram_ids": telegram_ids}
+
+
+@router.post("/{post_id}/invalidate-message-gone", status_code=status.HTTP_204_NO_CONTENT)
+async def invalidate_post_message_gone_endpoint(
+    post_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Mark post as invalid because the Telegram message no longer exists (deleted in channel).
+    Clears Redis cache and soft-deletes the post. Call this when fetching content fails (message gone).
+    """
+    from app.services.post_service import invalidate_post_message_gone
+    ok = await invalidate_post_message_gone(session, post_id)
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Post not found or already invalidated",
+        )
 
 
 @router.delete("/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
