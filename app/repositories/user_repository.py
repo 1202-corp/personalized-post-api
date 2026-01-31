@@ -88,9 +88,11 @@ class UserRepository:
         deleted_user = result.scalar_one_or_none()
         
         if deleted_user:
-            # Restore soft-deleted user
+            # Restore soft-deleted user and set to TRAINING status
+            from app.models import UserStatus
             deleted_user.is_deleted = False
             deleted_user.deleted_at = None
+            deleted_user.status = UserStatus.TRAINING
             deleted_user.username = user_data.username
             deleted_user.first_name = user_data.first_name
             deleted_user.last_name = user_data.last_name
