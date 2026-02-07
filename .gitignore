@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
+.env.local
+*.log
+alembic/__pycache__/
+alembic/versions/__pycache__/
+alembic/versions/add_posts_media_urls.py
