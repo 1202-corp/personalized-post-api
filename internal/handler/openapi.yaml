@@ -1,0 +1,630 @@
+openapi: 3.0.3
+info:
+  title: Core API (personalized-post-platform)
+  description: |
+    REST API for the personalized post platform.
+    Base path: `/api/v1`. Optional query `field` controls response shape (all fields vs selected).
+    When USE_MOCK=true, all endpoints return mock data.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8000
+    description: Local
+
+paths:
+  /:
+    get:
+      summary: Root
+      description: Service name and links to docs and health.
+      operationId: root
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              example:
+                service: "Core API (personalized-post-platform)"
+                docs: "/docs"
+                health: "/health"
+                links: ["/api/v1", "/docs", "/health"]
+
+  /health:
+    get:
+      summary: Liveness
+      description: Health check (liveness).
+      operationId: health
+      responses:
+        '200':
+          description: OK
+          content:
+            text/plain:
+              example: "ok"
+
+  /api/v1/users:
+    post:
+      summary: Create or get user
+      description: Create user from Telegram data or return existing. With query `field` returns body; otherwise 204.
+      operationId: usersCreate
+      parameters:
+        - name: field
+          in: query
+          schema: { type: string, example: "id,telegram_id,username" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [telegram_id]
+              properties:
+                telegram_id: { type: integer, format: int64, example: 123456789 }
+                username: { type: string, example: "johndoe" }
+                first_name: { type: string, example: "John" }
+                last_name: { type: string, example: "Doe" }
+            example:
+              telegram_id: 123456789
+              username: "johndoe"
+              first_name: "John"
+              last_name: "Doe"
+      responses:
+        '201':
+          description: Created (when field is set)
+          content:
+            application/json:
+              example:
+                id: 1
+                telegram_id: 123456789
+                username: "johndoe"
+                first_name: "John"
+                last_name: "Doe"
+                status: "active"
+                role: "member"
+                language: "en_US"
+                created_at: "2024-01-15T10:00:00Z"
+                updated_at: "2024-02-01T12:00:00Z"
+        '204':
+          description: No Content (when field is not set)
+
+  /api/v1/users/{telegram_id}:
+    get:
+      summary: Get user by Telegram ID
+      operationId: usersGet
+      parameters:
+        - name: telegram_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+        - name: field
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              example:
+                id: 1
+                telegram_id: 123456789
+                username: "johndoe"
+                status: "active"
+                role: "member"
+                language: "en_US"
+                created_at: "2024-01-15T10:00:00Z"
+                updated_at: "2024-02-01T12:00:00Z"
+        '404':
+          description: Not found
+    patch:
+      summary: Update user
+      operationId: usersPatch
+      parameters:
+        - name: telegram_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+        - name: field
+          in: query
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username: { type: string }
+                first_name: { type: string }
+                last_name: { type: string }
+                status: { type: string, enum: [new, training, active] }
+                language: { type: string }
+            example:
+              status: "active"
+              language: "ru_RU"
+      responses:
+        '200':
+          description: OK (when field is set)
+        '204':
+          description: No Content
+        '404':
+          description: Not found
+    delete:
+      summary: Delete user
+      operationId: usersDelete
+      parameters:
+        - name: telegram_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '204':
+          description: No Content
+        '404':
+          description: Not found
+
+  /api/v1/channels:
+    post:
+      summary: Create or get channel
+      operationId: channelsCreate
+      parameters:
+        - name: field
+          in: query
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [telegram_id, title]
+              properties:
+                telegram_id: { type: integer, format: int64 }
+                username: { type: string }
+                title: { type: string }
+            example:
+              telegram_id: 123456789
+              username: "durov"
+              title: "Durov"
+      responses:
+        '201':
+          description: Created
+        '204':
+          description: No Content
+    get:
+      summary: List channels
+      description: Query `defaults=true` returns only default training channels.
+      operationId: channelsList
+      parameters:
+        - name: defaults
+          in: query
+          schema: { type: boolean, default: false }
+        - name: field
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              example:
+                - id: 1
+                  telegram_id: 123456789
+                  username: "durov"
+                  title: "Durov"
+                  is_default: true
+                  created_at: "2024-01-01T00:00:00Z"
+                  updated_at: "2024-02-01T12:00:00Z"
+
+  /api/v1/channels/{channel_id}:
+    get:
+      summary: Get channel by ID
+      operationId: channelsGet
+      parameters:
+        - name: channel_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+        - name: field
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+        '404':
+          description: Not found
+
+  /api/v1/channels/user:
+    post:
+      summary: Add channel to user
+      operationId: channelsUserAdd
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [telegram_id, channel_id]
+              properties:
+                telegram_id: { type: integer, format: int64 }
+                channel_id: { type: integer, format: int64 }
+            example:
+              telegram_id: 123456789
+              channel_id: 1
+      responses:
+        '201':
+        '204':
+        '404':
+  /api/v1/channels/user/{telegram_id}:
+    get:
+      summary: List user channels
+      operationId: channelsUserList
+      parameters:
+        - name: telegram_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              example:
+                - id: 1
+                  telegram_id: 123456789
+                  username: "durov"
+                  title: "Durov"
+                  is_default: true
+
+  /api/v1/posts:
+    post:
+      summary: Create posts (bulk)
+      description: Idempotent by (channel_id, telegram_message_id). Returns created_count and post_ids.
+      operationId: postsCreate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel_id, posts]
+              properties:
+                channel_id: { type: integer, format: int64 }
+                posts:
+                  type: array
+                  items:
+                    type: object
+                    required: [telegram_message_id, posted_at]
+                    properties:
+                      telegram_message_id: { type: integer, format: int64 }
+                      text: { type: string }
+                      media_type: { type: string }
+                      media_file_id: { type: string }
+                      posted_at: { type: string, format: date-time }
+            example:
+              channel_id: 1
+              posts:
+                - telegram_message_id: 42
+                  text: "Hello world"
+                  media_type: "photo"
+                  posted_at: "2024-02-01T12:00:00Z"
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              example:
+                created_count: 1
+                post_ids: [100]
+
+  /api/v1/posts/{post_id}:
+    get:
+      summary: Get post metadata
+      operationId: postsGet
+      parameters:
+        - name: post_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              example:
+                id: 1
+                channel_id: 1
+                telegram_message_id: 42
+                media_type: "photo"
+                posted_at: "2024-02-01T12:00:00Z"
+                created_at: "2024-02-01T12:00:01Z"
+                updated_at: "2024-02-01T12:00:01Z"
+        '404':
+          description: Not found
+
+  /api/v1/posts/{post_id}/content:
+    get:
+      summary: Get post content (text, file_id, media)
+      description: From Redis cache or channels-scraper.
+      operationId: postsContent
+      parameters:
+        - name: post_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              example:
+                text: "Post body text"
+                media_type: "photo"
+                media_file_id: "AgACAgIAAxkB"
+                cached_at: "2024-02-01T12:00:00Z"
+        '404':
+          description: Not found
+
+  /api/v1/posts/training:
+    post:
+      summary: Get posts for training
+      description: Returns N posts per channel for like/dislike training.
+      operationId: postsTraining
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [telegram_id, channel_ids, posts_per_channel]
+              properties:
+                telegram_id: { type: integer, format: int64 }
+                channel_ids: { type: array, items: { type: integer, format: int64 } }
+                posts_per_channel: { type: integer }
+            example:
+              telegram_id: 123456789
+              channel_ids: [1, 2]
+              posts_per_channel: 5
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              example:
+                - post:
+                    id: 1
+                    channel_id: 1
+                    telegram_message_id: 100
+                    posted_at: "2024-02-01T12:00:00Z"
+                  channel:
+                    id: 1
+                    title: "Durov"
+                    username: "durov"
+
+  /api/v1/interactions:
+    post:
+      summary: Create interaction (like/dislike/skip)
+      operationId: interactionsCreate
+      parameters:
+        - name: field
+          in: query
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [telegram_id, post_id, interaction_type]
+              properties:
+                telegram_id: { type: integer, format: int64 }
+                post_id: { type: integer, format: int64 }
+                interaction_type: { type: string, enum: [like, dislike, skip] }
+            example:
+              telegram_id: 123456789
+              post_id: 10
+              interaction_type: "like"
+      responses:
+        '201':
+        '204':
+  /api/v1/interactions/{telegram_id}:
+    get:
+      summary: List user interactions
+      operationId: interactionsList
+      parameters:
+        - name: telegram_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              example:
+                - id: 1
+                  user_id: 1
+                  post_id: 10
+                  interaction_type: "like"
+                  created_at: "2024-02-01T10:00:00Z"
+    delete:
+      summary: Delete all user interactions
+      operationId: interactionsDelete
+      parameters:
+        - name: telegram_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '204':
+          description: No Content
+
+  /api/v1/ml/train:
+    post:
+      summary: Train ML model for user
+      operationId: mlTrain
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                telegram_id: { type: integer, format: int64 }
+            example:
+              telegram_id: 123456789
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              example:
+                ok: true
+                message: "Model trained successfully"
+
+  /admin/auth/login:
+    post:
+      summary: Admin login
+      operationId: adminAuthLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login, password]
+              properties:
+                login: { type: string }
+                password: { type: string }
+            example:
+              login: "admin"
+              password: "secret"
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              example:
+                access_token: "eyJhbGciOiJIUzI1NiIs..."
+                refresh_token: "eyJhbGciOiJIUzI1NiIs..."
+                expires_in: 86400
+        '401':
+          description: Unauthorized
+
+  /admin/auth/refresh:
+    post:
+      summary: Refresh access token
+      operationId: adminAuthRefresh
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              example:
+                access_token: "eyJhbGciOiJIUzI1NiIs..."
+                expires_in: 86400
+
+  /admin/dashboard:
+    get:
+      summary: Dashboard data
+      operationId: adminDashboard
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              example:
+                overview: { users_total: 150, channels_total: 10, posts_total: 500 }
+                daily: { new_users: 5, new_posts: 20 }
+                channels: []
+                retention: { day1: 0.8, day7: 0.5 }
+                recommendations: { delivered_today: 100 }
+
+  /admin/users:
+    get:
+      summary: List users (paginated)
+      operationId: adminUsersList
+      parameters:
+        - name: skip
+          in: query
+          schema: { type: integer, default: 0 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+      responses:
+        '200':
+          description: OK
+
+  /admin/users/{user_id}:
+    patch:
+      summary: Update user (admin)
+      operationId: adminUsersPatch
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+        - name: field
+          in: query
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { type: string }
+                role: { type: string }
+      responses:
+        '200':
+        '204':
+        '404':
+
+  /admin/channels:
+    get:
+      summary: List channels (admin, with stats)
+      operationId: adminChannelsList
+      parameters:
+        - name: skip
+          in: query
+          schema: { type: integer }
+        - name: limit
+          in: query
+          schema: { type: integer }
+      responses:
+        '200':
+          description: OK
+
+  /admin/ml/clusters/recalculate:
+    post:
+      summary: Recalculate ML clusters
+      operationId: adminMLClustersRecalculate
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              example:
+                ok: true
+                message: "clusters recalculated"
+
+  /admin/ml/clusters/stats:
+    get:
+      summary: Cluster statistics
+      operationId: adminMLClustersStats
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              example:
+                clusters_count: 3
+                channels:
+                  - channel_id: 1
+                    clusters: 2
+                  - channel_id: 2
+                    clusters: 1
